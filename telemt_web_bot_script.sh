@@ -59,14 +59,6 @@ check_root() {
     fi
 }
 
-check_telemt_installed() {
-    if [[ ! -f "$TELEMT_BIN" ]]; then
-        warn "Telemt не установлен"
-        return 1
-    fi
-    return 0
-}
-
 get_server_ip() {
     ipv4=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null)
     if [[ -n "$ipv4" && "$ipv4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -1544,6 +1536,9 @@ username = "$panel_user"
 password_hash = "$panel_password_hash"
 jwt_secret = "$jwt_secret"
 session_ttl = "24h"
+
+[cors]
+allowed_origins = ["*"]
 EOF
     chmod 600 $PANEL_CONFIG
 
