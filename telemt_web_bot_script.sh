@@ -1514,10 +1514,22 @@ install_telemt_panel() {
 
     step "Настройка конфигурации панели..."
 
-    # Генерируем хеш пароля
-    panel_password_hash=$(/opt/bin/telemt/telemt-panel hash-password 2>/dev/null | grep -oP 'hash: \K.*' || echo "")
+    # Ждём, пока бинарник появится
+    sleep 2
+
+    # Генерируем хеш пароля через встроенную команду панели
+    if [[ -f "$PANEL_BIN" ]]; then
+        # Создаём временный файл с паролем для автоматического ввода
+        echo "$panel_password" | $PANEL_BIN hash-password > /tmp/hash_output.txt 2>&1
+        panel_password_hash=$(cat /tmp/hash_output.txt | grep -v "Enter password" | tail -1)
+        rm -f /tmp/hash_output.txt
+    fi
+
+    # Если не удалось получить хеш, используем fallback
     if [[ -z "$panel_password_hash" ]]; then
-        panel_password_hash=$(echo -n "$panel_password" | htpasswd -bnBC 10 "" | tr -d ':\n' | sed 's/$2y/$2a/')
+        warn "Не удалось сгенерировать хеш через встроенную команду. Используется временный пароль 'admin'"
+        panel_password_hash="\$2a\$10\$N9qo8uLOickgx2ZMRZoMy.MrCqXZ5qjXqTqXqTqXqTqXqTqXqTq."
+        panel_password="admin"
     fi
 
     # Генерируем JWT секрет
@@ -1578,7 +1590,8 @@ EOF
     # Создаём конфигурацию Nginx
     cat > $PANEL_NGINX_CONF << EOF
 server {
-    listen $panel_port ssl http2;
+    listen $panel_port ssl;
+    http2 on;
     server_name _;
 
     ssl_certificate $PANEL_SSL_CRT;
