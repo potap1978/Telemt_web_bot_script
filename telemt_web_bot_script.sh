@@ -35,6 +35,8 @@ PANEL_BIN="/opt/bin/telemt/telemt-panel"
 PANEL_SERVICE="/etc/systemd/system/telemt-panel.service"
 PANEL_NGINX_CONF="/etc/nginx/sites-available/telemt-panel"
 PANEL_NGINX_ENABLED="/etc/nginx/sites-enabled/telemt-panel"
+PANEL_SSL_KEY="/etc/nginx/ssl/telemt-panel.key"
+PANEL_SSL_CRT="/etc/nginx/ssl/telemt-panel.crt"
 
 # ============================================
 # Вспомогательные функции
@@ -1503,11 +1505,30 @@ install_telemt_panel() {
     # Ждём, пока бинарник появится
     sleep 2
 
-    # Генерируем хеш пароля через openssl
-    panel_password_hash=$(openssl passwd -apr1 "$panel_password")
-
     # Генерируем JWT секрет
     jwt_secret=$(openssl rand -hex 32)
+
+    # ============================================
+    # ГЕНЕРАЦИЯ ПРАВИЛЬНОГО BCRYPT ХЕША
+    # ============================================
+    step "Генерация хеша пароля..."
+    
+    # Пробуем через встроенную команду панели
+    if [[ -f "$PANEL_BIN" ]]; then
+        panel_password_hash=$(echo "$panel_password" | $PANEL_BIN hash-password 2>/dev/null | grep -oP '\$2a\$[^\s]+' | head -1)
+    fi
+
+    # Если не получилось, используем openssl bcrypt (если доступен)
+    if [[ -z "$panel_password_hash" ]] && command -v openssl &>/dev/null; then
+        panel_password_hash=$(openssl passwd -bcrypt "$panel_password" 2>/dev/null)
+    fi
+
+    # Если всё равно не получилось, ошибка
+    if [[ -z "$panel_password_hash" ]]; then
+        error "Не удалось сгенерировать хеш для пароля. Установка прервана."
+        pause
+        return
+    fi
 
     # Создаём конфиг панели (слушает локально)
     mkdir -p /opt/etc/telemt-panel
