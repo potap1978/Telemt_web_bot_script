@@ -35,8 +35,6 @@ PANEL_BIN="/opt/bin/telemt/telemt-panel"
 PANEL_SERVICE="/etc/systemd/system/telemt-panel.service"
 PANEL_NGINX_CONF="/etc/nginx/sites-available/telemt-panel"
 PANEL_NGINX_ENABLED="/etc/nginx/sites-enabled/telemt-panel"
-PANEL_SSL_KEY="/etc/ssl/private/telemt-panel.key"
-PANEL_SSL_CRT="/etc/ssl/certs/telemt-panel.crt"
 
 # ============================================
 # Вспомогательные функции
@@ -1484,6 +1482,15 @@ install_telemt_panel() {
         warn "Пароль не введён. Установлен пароль по умолчанию: admin"
     fi
 
+    # ЗАПРОС ТИПА СЕРТИФИКАТОВ
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}ВЫБОР СЕРТИФИКАТОВ:${NC}"
+    echo "  1) Создать самоподписной сертификат (автоматически)"
+    echo "  2) Использовать мои существующие сертификаты (не будут удалены при удалении панели)"
+    read -p "Выберите [1-2]: " cert_type
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
     step "Скачивание и установка Telemt Panel..."
     curl -fsSL https://raw.githubusercontent.com/amirotin/telemt_panel/main/install.sh -o $PANEL_INSTALL_SCRIPT
     bash $PANEL_INSTALL_SCRIPT
@@ -1535,18 +1542,48 @@ EOF
     step "Настройка сертификатов..."
     server_ip=$(get_server_ip)
 
-    # Создаём самоподписные сертификаты на 10 лет
-    step "Создание самоподписных сертификатов..."
+    # Создаём директорию для SSL
     mkdir -p /etc/nginx/ssl
-    PANEL_SSL_KEY="/etc/nginx/ssl/telemt-panel.key"
-    PANEL_SSL_CRT="/etc/nginx/ssl/telemt-panel.crt"
-    
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout $PANEL_SSL_KEY \
-        -out $PANEL_SSL_CRT \
-        -subj "/C=RU/ST=State/L=City/O=Telemt/CN=$server_ip" 2>/dev/null
-    chmod 600 $PANEL_SSL_KEY
-    chmod 644 $PANEL_SSL_CRT
+
+    # ПЕРЕМЕННЫЕ ДЛЯ ПУТЕЙ СЕРТИФИКАТОВ
+    USE_CUSTOM_CERTS=false
+    CUSTOM_CERT_PATH=""
+    CUSTOM_KEY_PATH=""
+
+    if [[ "$cert_type" == "2" ]]; then
+        echo ""
+        read -p "Введите полный путь к файлу сертификата (.crt или .pem): " CUSTOM_CERT_PATH
+        read -p "Введите полный путь к файлу приватного ключа (.key): " CUSTOM_KEY_PATH
+        
+        if [[ -f "$CUSTOM_CERT_PATH" ]] && [[ -f "$CUSTOM_KEY_PATH" ]]; then
+            USE_CUSTOM_CERTS=true
+            info "Будут использованы ваши сертификаты:"
+            echo "  • Сертификат: $CUSTOM_CERT_PATH"
+            echo "  • Ключ: $CUSTOM_KEY_PATH"
+            echo -e "${YELLOW}⚠️  При удалении панели эти файлы НЕ будут удалены${NC}"
+        else
+            error "Один из файлов сертификатов не найден! Будет создан самоподписной сертификат."
+            USE_CUSTOM_CERTS=false
+        fi
+    fi
+
+    if [[ "$USE_CUSTOM_CERTS" == "true" ]]; then
+        # СОЗДАЁМ СИМВОЛИЧЕСКИЕ ССЫЛКИ на существующие сертификаты
+        step "Создание ссылок на ваши сертификаты..."
+        ln -sf "$CUSTOM_CERT_PATH" /etc/nginx/ssl/telemt-panel.crt
+        ln -sf "$CUSTOM_KEY_PATH" /etc/nginx/ssl/telemt-panel.key
+        info "Созданы символические ссылки (оригиналы не скопированы)"
+    else
+        # Создаём самоподписные сертификаты на 10 лет
+        step "Создание самоподписных сертификатов..."
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout /etc/nginx/ssl/telemt-panel.key \
+            -out /etc/nginx/ssl/telemt-panel.crt \
+            -subj "/C=RU/ST=State/L=City/O=Telemt/CN=$server_ip" 2>/dev/null
+        chmod 600 /etc/nginx/ssl/telemt-panel.key
+        chmod 644 /etc/nginx/ssl/telemt-panel.crt
+        info "Создан самоподписной сертификат"
+    fi
 
     step "Настройка Nginx..."
 
@@ -1561,8 +1598,8 @@ server {
     http2 on;
     server_name _;
 
-    ssl_certificate $PANEL_SSL_CRT;
-    ssl_certificate_key $PANEL_SSL_KEY;
+    ssl_certificate /etc/nginx/ssl/telemt-panel.crt;
+    ssl_certificate_key /etc/nginx/ssl/telemt-panel.key;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
@@ -1613,6 +1650,15 @@ EOF
 
     sleep 3
 
+    # СОХРАНЯЕМ ИНФОРМАЦИЮ О ТИПЕ СЕРТИФИКАТОВ ДЛЯ УДАЛЕНИЯ
+    if [[ "$USE_CUSTOM_CERTS" == "true" ]]; then
+        echo "CUSTOM_CERTS=true" > /opt/etc/telemt-panel/certs_info
+        echo "CUSTOM_CERT_PATH=$CUSTOM_CERT_PATH" >> /opt/etc/telemt-panel/certs_info
+        echo "CUSTOM_KEY_PATH=$CUSTOM_KEY_PATH" >> /opt/etc/telemt-panel/certs_info
+    else
+        echo "CUSTOM_CERTS=false" > /opt/etc/telemt-panel/certs_info
+    fi
+
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}${BOLD}WEB ПАНЕЛЬ TELEMT УСПЕШНО УСТАНОВЛЕНА!${NC}"
@@ -1623,7 +1669,12 @@ EOF
     echo ""
     echo -e "${YELLOW}⚠️  Важно:${NC}"
     echo "  • Панель доступна по HTTPS на порту $panel_port"
-    echo "  • Используется самоподписной сертификат (браузер может показывать предупреждение)"
+    if [[ "$USE_CUSTOM_CERTS" == "true" ]]; then
+        echo "  • Используются ваши сертификаты (оригиналы не тронуты)"
+        echo "  • При удалении панели ваши сертификаты останутся на месте"
+    else
+        echo "  • Используется самоподписной сертификат (браузер может показывать предупреждение)"
+    fi
     echo "  • WebSocket работает корректно (нет ошибки origin)"
     echo "  • Для управления панелью войдите с указанными логином и паролем"
     echo ""
@@ -1651,17 +1702,31 @@ uninstall_telemt_panel() {
         return
     fi
 
+    # Читаем информацию о типе сертификатов
+    CERTS_INFO_FILE="/opt/etc/telemt-panel/certs_info"
+    USE_CUSTOM_CERTS=false
+    if [[ -f "$CERTS_INFO_FILE" ]]; then
+        source "$CERTS_INFO_FILE"
+    fi
+
     warn "ВНИМАНИЕ! Это действие удалит ТОЛЬКО Web панель и её настройки:"
     echo "  • Бинарник панели"
     echo "  • Конфигурацию панели"
     echo "  • Systemd сервис панели"
     echo "  • Настройки Nginx для панели"
-    echo "  • Сертификаты панели"
+    if [[ "$USE_CUSTOM_CERTS" == "true" ]]; then
+        echo "  • Ссылки на ваши сертификаты (ОРИГИНАЛЫ НЕ ТРОГАЮТСЯ)"
+    else
+        echo "  • Самоподписные сертификаты панели"
+    fi
     echo ""
     echo -e "${GREEN}⚠️  ПРИ ЭТОМ НЕ БУДУТ УДАЛЕНЫ:${NC}"
     echo "  • Telemt (основной прокси) — ОСТАНЕТСЯ"
     echo "  • Telegram бот — ОСТАНЕТСЯ"
     echo "  • Созданные пользователи прокси — ОСТАНУТСЯ"
+    if [[ "$USE_CUSTOM_CERTS" == "true" ]]; then
+        echo "  • Ваши оригинальные сертификаты — ОСТАНУТСЯ ($CUSTOM_CERT_PATH, $CUSTOM_KEY_PATH)"
+    fi
     echo ""
     read -p "Вы уверены, что хотите удалить ТОЛЬКО Web панель? (y/N): " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
@@ -1685,9 +1750,26 @@ uninstall_telemt_panel() {
     rm -f $PANEL_NGINX_CONF
     rm -f $PANEL_NGINX_ENABLED
 
-    step "Удаление сертификатов панели..."
-    rm -f /etc/nginx/ssl/telemt-panel.key
-    rm -f /etc/nginx/ssl/telemt-panel.crt
+    step "Удаление сертификатов/ссылок панели..."
+    if [[ "$USE_CUSTOM_CERTS" == "true" ]]; then
+        # Удаляем только символические ссылки, оригиналы не трогаем
+        if [[ -L "/etc/nginx/ssl/telemt-panel.crt" ]]; then
+            rm -f /etc/nginx/ssl/telemt-panel.crt
+            info "Удалена ссылка на сертификат (оригинал сохранён)"
+        fi
+        if [[ -L "/etc/nginx/ssl/telemt-panel.key" ]]; then
+            rm -f /etc/nginx/ssl/telemt-panel.key
+            info "Удалена ссылка на ключ (оригинал сохранён)"
+        fi
+        echo -e "${GREEN}✓ Ваши оригинальные сертификаты остались нетронутыми:${NC}"
+        echo "  • $CUSTOM_CERT_PATH"
+        echo "  • $CUSTOM_KEY_PATH"
+    else
+        # Удаляем самоподписные сертификаты
+        rm -f /etc/nginx/ssl/telemt-panel.crt
+        rm -f /etc/nginx/ssl/telemt-panel.key
+        info "Удалены самоподписные сертификаты"
+    fi
 
     step "Восстановление стандартной конфигурации Nginx..."
     # Включаем стандартный сайт если он есть
@@ -1702,6 +1784,12 @@ uninstall_telemt_panel() {
     systemctl daemon-reload
 
     success "Web панель Telemt полностью удалена! Telemt и Telegram бот остались без изменений."
+    if [[ "$USE_CUSTOM_CERTS" == "true" ]]; then
+        echo ""
+        echo -e "${GREEN}✅ Ваши сертификаты НЕ БЫЛИ УДАЛЕНЫ и остаются по адресам:${NC}"
+        echo "  • $CUSTOM_CERT_PATH"
+        echo "  • $CUSTOM_KEY_PATH"
+    fi
     pause
 }
 
