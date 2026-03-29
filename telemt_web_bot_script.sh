@@ -67,6 +67,14 @@ check_telemt_installed() {
     return 0
 }
 
+check_panel_installed() {
+    if [[ ! -f "$PANEL_BIN" ]] || [[ ! -f "$PANEL_CONFIG" ]]; then
+        warn "Web панель не установлена"
+        return 1
+    fi
+    return 0
+}
+
 get_server_ip() {
     ipv4=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null)
     if [[ -n "$ipv4" && "$ipv4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -1413,7 +1421,7 @@ uninstall_bot() {
 }
 
 # ============================================
-# Функции для Web панели Telemt Panel (ИСПРАВЛЕННАЯ)
+# Функции для Web панели Telemt Panel
 # ============================================
 install_telemt_panel() {
     clear
@@ -1755,6 +1763,68 @@ uninstall_telemt_panel() {
 }
 
 # ============================================
+# СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ (НОВЫЙ ПУНКТ 14)
+# ============================================
+change_panel_credentials() {
+    clear
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}${BOLD}           СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    if ! check_panel_installed; then
+        pause
+        return
+    fi
+
+    # Показываем текущие данные
+    current_username=$(grep -oP 'username = "\K[^"]+' $PANEL_CONFIG 2>/dev/null || echo "admin")
+    echo -e "${CYAN}Текущий логин:${NC} ${YELLOW}$current_username${NC}"
+    echo ""
+
+    # Вводим новые данные
+    read -p "Введите новый логин (оставьте пустым чтобы оставить $current_username): " new_username
+    new_username=${new_username:-$current_username}
+
+    read -sp "Введите новый пароль (оставьте пустым чтобы оставить без изменений): " new_password
+    echo ""
+
+    if [[ -z "$new_password" ]]; then
+        # Только меняем логин
+        step "Смена логина..."
+        sed -i "s/username = \".*\"/username = \"$new_username\"/" $PANEL_CONFIG
+        success "Логин изменён на $new_username"
+    else
+        # Меняем логин и пароль
+        step "Генерация хеша нового пароля..."
+        new_hash=$(echo "$new_password" | /opt/bin/telemt/telemt-panel hash-password 2>/dev/null | grep -oP '\$2a\$[^\s]+' | head -1)
+        
+        if [[ -z "$new_hash" ]]; then
+            error "Не удалось сгенерировать хеш пароля"
+            pause
+            return
+        fi
+        
+        step "Обновление логина и пароля..."
+        sed -i "s/username = \".*\"/username = \"$new_username\"/" $PANEL_CONFIG
+        sed -i "s/password_hash = \".*\"/password_hash = \"$new_hash\"/" $PANEL_CONFIG
+        
+        success "Логин и пароль успешно изменены!"
+        echo -e "${GREEN}Новый логин:${NC} $new_username"
+        echo -e "${GREEN}Новый пароль:${NC} $new_password"
+    fi
+
+    # Перезапускаем панель
+    step "Перезапуск панели..."
+    systemctl restart telemt-panel
+    sleep 2
+
+    echo ""
+    info "Изменения вступят в силу при следующем входе в панель"
+    pause
+}
+
+# ============================================
 # Статус и информация
 # ============================================
 show_status() {
@@ -1866,6 +1936,7 @@ show_menu() {
     echo -e "${MAGENTA}  WEB ПАНЕЛЬ${NC}"
     echo -e "  ${MAGENTA}12)${NC} Установить Web панель Telemt"
     echo -e "  ${RED}13)${NC} Удалить Web панель Telemt"
+    echo -e "  ${CYAN}14)${NC} Сменить логин/пароль Web панели"
     echo ""
     echo -e "${RED}  0)${NC} Выход"
     echo ""
@@ -1895,13 +1966,14 @@ main() {
             11) uninstall_bot ;;
             12) install_telemt_panel ;;
             13) uninstall_telemt_panel ;;
+            14) change_panel_credentials ;;
             0) 
                 clear
                 info "До свидания!"
                 exit 0
                 ;;
             *) 
-                error "Неверный выбор. Пожалуйста, выберите от 0 до 13"
+                error "Неверный выбор. Пожалуйста, выберите от 0 до 14"
                 sleep 2
                 ;;
         esac
