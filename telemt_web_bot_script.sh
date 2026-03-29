@@ -1413,7 +1413,7 @@ uninstall_bot() {
 }
 
 # ============================================
-# Функции для Web панели Telemt Panel
+# Функции для Web панели Telemt Panel (ИСПРАВЛЕННАЯ)
 # ============================================
 install_telemt_panel() {
     clear
@@ -1449,20 +1449,20 @@ install_telemt_panel() {
 
     # Запрос порта для веб-панели
     echo ""
-    read -p "Введите порт для веб-панели (по умолчанию 8443, от 1024 до 65535): " panel_port
+    read -p "Введите порт для веб-панели (по умолчанию 3333, от 1024 до 65535): " panel_port
     if [[ -z "$panel_port" ]]; then
-        panel_port="8443"
+        panel_port="3333"
     fi
     if ! [[ "$panel_port" =~ ^[0-9]+$ ]] || [[ $panel_port -lt 1024 ]] || [[ $panel_port -gt 65535 ]]; then
-        error "Неверный порт. Используется порт 8443"
-        panel_port="8443"
+        error "Неверный порт. Используется порт 3333"
+        panel_port="3333"
     fi
 
     # Проверка, не занят ли порт
     if ss -tlnp | grep -q ":$panel_port "; then
         warn "Порт $panel_port уже занят!"
-        read -p "Использовать другой порт? (y/N): " change_port
-        if [[ "$change_port" == "y" || "$change_port" == "Y" ]]; then
+        read -p "Использовать другой порт? (y/N): " change_port_choice
+        if [[ "$change_port_choice" == "y" || "$change_port_choice" == "Y" ]]; then
             read -p "Введите новый порт: " panel_port
             if ! [[ "$panel_port" =~ ^[0-9]+$ ]] || [[ $panel_port -lt 1024 ]] || [[ $panel_port -gt 65535 ]]; then
                 error "Неверный порт. Установка отменена"
@@ -1472,27 +1472,6 @@ install_telemt_panel() {
         fi
     fi
 
-    # Запрос типа сертификатов
-    echo ""
-    echo "Выберите тип сертификата:"
-    echo "  1) Самоподписные (10 лет)"
-    echo "  2) Использовать существующие"
-    read -p "Выбор [1-2]: " cert_choice
-
-    case $cert_choice in
-        2)
-            read -p "Введите путь к сертификату (.crt): " custom_crt
-            read -p "Введите путь к приватному ключу (.key): " custom_key
-            if [[ ! -f "$custom_crt" ]] || [[ ! -f "$custom_key" ]]; then
-                error "Файлы сертификатов не найдены. Будет использован самоподписной сертификат"
-                cert_choice=1
-            fi
-            ;;
-        *)
-            cert_choice=1
-            ;;
-    esac
-
     # Запрос логина и пароля для панели
     echo ""
     read -p "Введите логин администратора панели (по умолчанию admin): " panel_user
@@ -1501,8 +1480,8 @@ install_telemt_panel() {
     read -sp "Введите пароль администратора: " panel_password
     echo ""
     if [[ -z "$panel_password" ]]; then
-        panel_password="admin123"
-        warn "Пароль не введён. Установлен пароль по умолчанию: admin123"
+        panel_password="admin"
+        warn "Пароль не введён. Установлен пароль по умолчанию: admin"
     fi
 
     step "Скачивание и установка Telemt Panel..."
@@ -1517,25 +1496,13 @@ install_telemt_panel() {
     # Ждём, пока бинарник появится
     sleep 2
 
-    # Генерируем хеш пароля через встроенную команду панели
-    if [[ -f "$PANEL_BIN" ]]; then
-        # Создаём временный файл с паролем для автоматического ввода
-        echo "$panel_password" | $PANEL_BIN hash-password > /tmp/hash_output.txt 2>&1
-        panel_password_hash=$(cat /tmp/hash_output.txt | grep -v "Enter password" | tail -1)
-        rm -f /tmp/hash_output.txt
-    fi
-
-    # Если не удалось получить хеш, используем fallback
-    if [[ -z "$panel_password_hash" ]]; then
-        warn "Не удалось сгенерировать хеш через встроенную команду. Используется временный пароль 'admin'"
-        panel_password_hash="\$2a\$10\$N9qo8uLOickgx2ZMRZoMy.MrCqXZ5qjXqTqXqTqXqTqXqTqXqTq."
-        panel_password="admin"
-    fi
+    # Генерируем хеш пароля через openssl
+    panel_password_hash=$(openssl passwd -apr1 "$panel_password")
 
     # Генерируем JWT секрет
     jwt_secret=$(openssl rand -hex 32)
 
-    # Создаём конфиг панели
+    # Создаём конфиг панели (слушает локально)
     mkdir -p /opt/etc/telemt-panel
     cat > $PANEL_CONFIG << EOF
 listen = "127.0.0.1:8080"
@@ -1559,35 +1526,35 @@ session_ttl = "24h"
 
 [cors]
 allowed_origins = ["*"]
+
+[websocket]
+allowed_origins = ["*"]
 EOF
     chmod 600 $PANEL_CONFIG
 
     step "Настройка сертификатов..."
     server_ip=$(get_server_ip)
 
-    if [[ $cert_choice -eq 2 ]] && [[ -f "$custom_crt" ]] && [[ -f "$custom_key" ]]; then
-        cp "$custom_crt" $PANEL_SSL_CRT
-        cp "$custom_key" $PANEL_SSL_KEY
-        chmod 644 $PANEL_SSL_CRT
-        chmod 600 $PANEL_SSL_KEY
-    else
-        # Создаём самоподписные сертификаты на 10 лет
-        step "Создание самоподписных сертификатов на 10 лет..."
-        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout $PANEL_SSL_KEY \
-            -out $PANEL_SSL_CRT \
-            -subj "/C=RU/ST=State/L=City/O=Telemt/CN=$server_ip" 2>/dev/null
-        chmod 600 $PANEL_SSL_KEY
-        chmod 644 $PANEL_SSL_CRT
-    fi
+    # Создаём самоподписные сертификаты на 10 лет
+    step "Создание самоподписных сертификатов..."
+    mkdir -p /etc/nginx/ssl
+    PANEL_SSL_KEY="/etc/nginx/ssl/telemt-panel.key"
+    PANEL_SSL_CRT="/etc/nginx/ssl/telemt-panel.crt"
+    
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout $PANEL_SSL_KEY \
+        -out $PANEL_SSL_CRT \
+        -subj "/C=RU/ST=State/L=City/O=Telemt/CN=$server_ip" 2>/dev/null
+    chmod 600 $PANEL_SSL_KEY
+    chmod 644 $PANEL_SSL_CRT
 
     step "Настройка Nginx..."
 
     # Убедимся, что директории существуют
-    sudo mkdir -p /etc/nginx/sites-available
-    sudo mkdir -p /etc/nginx/sites-enabled
+    mkdir -p /etc/nginx/sites-available
+    mkdir -p /etc/nginx/sites-enabled
 
-    # Создаём конфигурацию Nginx
+    # Создаём конфигурацию Nginx с поддержкой WebSocket
     cat > $PANEL_NGINX_CONF << EOF
 server {
     listen $panel_port ssl;
@@ -1602,13 +1569,13 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
     }
 }
 EOF
@@ -1619,7 +1586,7 @@ EOF
 
     # Добавляем include sites-enabled в nginx.conf если нужно
     if ! grep -q "sites-enabled" /etc/nginx/nginx.conf; then
-        sudo sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
+        sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
     fi
 
     # Проверяем конфигурацию Nginx
@@ -1657,6 +1624,7 @@ EOF
     echo -e "${YELLOW}⚠️  Важно:${NC}"
     echo "  • Панель доступна по HTTPS на порту $panel_port"
     echo "  • Используется самоподписной сертификат (браузер может показывать предупреждение)"
+    echo "  • WebSocket работает корректно (нет ошибки origin)"
     echo "  • Для управления панелью войдите с указанными логином и паролем"
     echo ""
     echo -e "${BLUE}Проверка статуса:${NC}"
@@ -1718,8 +1686,8 @@ uninstall_telemt_panel() {
     rm -f $PANEL_NGINX_ENABLED
 
     step "Удаление сертификатов панели..."
-    rm -f $PANEL_SSL_KEY
-    rm -f $PANEL_SSL_CRT
+    rm -f /etc/nginx/ssl/telemt-panel.key
+    rm -f /etc/nginx/ssl/telemt-panel.crt
 
     step "Восстановление стандартной конфигурации Nginx..."
     # Включаем стандартный сайт если он есть
@@ -1767,7 +1735,7 @@ show_status() {
     if systemctl is-active --quiet telemt-panel 2>/dev/null; then
         echo -e "${GREEN}● Web панель: АКТИВЕН${NC}"
         server_ip=$(get_server_ip)
-        panel_port=$(grep -oP "listen \K\d+" $PANEL_NGINX_CONF 2>/dev/null || echo "8443")
+        panel_port=$(grep -oP "listen \K\d+" $PANEL_NGINX_CONF 2>/dev/null || echo "3333")
         echo -e "${GREEN}   Доступ: https://$server_ip:$panel_port${NC}"
     else
         echo -e "${RED}● Web панель: НЕ АКТИВЕН${NC}"
