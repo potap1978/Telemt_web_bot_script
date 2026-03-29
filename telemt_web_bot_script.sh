@@ -59,6 +59,14 @@ check_root() {
     fi
 }
 
+check_telemt_installed() {
+    if [[ ! -f "$TELEMT_BIN" ]]; then
+        warn "Telemt не установлен"
+        return 1
+    fi
+    return 0
+}
+
 get_server_ip() {
     ipv4=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null)
     if [[ -n "$ipv4" && "$ipv4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -1563,6 +1571,10 @@ EOF
 
     step "Настройка Nginx..."
 
+    # Убедимся, что директории существуют
+    sudo mkdir -p /etc/nginx/sites-available
+    sudo mkdir -p /etc/nginx/sites-enabled
+
     # Создаём конфигурацию Nginx
     cat > $PANEL_NGINX_CONF << EOF
 server {
@@ -1591,6 +1603,11 @@ EOF
     # Включаем конфигурацию
     ln -sf $PANEL_NGINX_CONF $PANEL_NGINX_ENABLED
     rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+
+    # Добавляем include sites-enabled в nginx.conf если нужно
+    if ! grep -q "sites-enabled" /etc/nginx/nginx.conf; then
+        sudo sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
+    fi
 
     # Проверяем конфигурацию Nginx
     nginx -t
@@ -1646,34 +1663,35 @@ uninstall_telemt_panel() {
     echo -e "${RED}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
+    # Проверяем, установлена ли Web панель
     if [[ ! -f "$PANEL_BIN" ]] && [[ ! -f "$PANEL_SERVICE" ]]; then
         warn "Web панель Telemt не установлена"
         pause
         return
     fi
 
-    warn "ВНИМАНИЕ! Это действие удалит Web панель и её настройки:"
+    warn "ВНИМАНИЕ! Это действие удалит ТОЛЬКО Web панель и её настройки:"
     echo "  • Бинарник панели"
     echo "  • Конфигурацию панели"
-    echo "  • Systemd сервис"
+    echo "  • Systemd сервис панели"
     echo "  • Настройки Nginx для панели"
+    echo "  • Сертификаты панели"
     echo ""
-    echo -e "${YELLOW}⚠️  При этом НЕ будут удалены:${NC}"
-    echo "  • Telemt (основной прокси)"
-    echo "  • Telegram бот"
-    echo "  • Созданные пользователи прокси"
+    echo -e "${GREEN}⚠️  ПРИ ЭТОМ НЕ БУДУТ УДАЛЕНЫ:${NC}"
+    echo "  • Telemt (основной прокси) — ОСТАНЕТСЯ"
+    echo "  • Telegram бот — ОСТАНЕТСЯ"
+    echo "  • Созданные пользователи прокси — ОСТАНУТСЯ"
     echo ""
-    read -p "Вы уверены, что хотите удалить Web панель? (y/N): " confirm
+    read -p "Вы уверены, что хотите удалить ТОЛЬКО Web панель? (y/N): " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
         info "Удаление отменено"
         pause
         return
     fi
 
-    step "Остановка сервисов..."
+    step "Остановка сервисов панели..."
     systemctl stop telemt-panel 2>/dev/null
     systemctl disable telemt-panel 2>/dev/null
-    systemctl stop nginx 2>/dev/null
 
     step "Удаление файлов панели..."
     rm -f $PANEL_SERVICE
@@ -1682,17 +1700,18 @@ uninstall_telemt_panel() {
     rm -rf /opt/etc/telemt-panel
     rm -rf /var/lib/telemt-panel
 
-    step "Удаление конфигурации Nginx..."
+    step "Удаление конфигурации Nginx для панели..."
     rm -f $PANEL_NGINX_CONF
     rm -f $PANEL_NGINX_ENABLED
 
-    step "Удаление сертификатов..."
+    step "Удаление сертификатов панели..."
     rm -f $PANEL_SSL_KEY
     rm -f $PANEL_SSL_CRT
 
-    step "Восстановление Nginx (если нужно)..."
-    if [[ ! -f /etc/nginx/sites-enabled/default ]] && [[ -f /etc/nginx/sites-available/default ]]; then
-        ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+    step "Восстановление стандартной конфигурации Nginx..."
+    # Включаем стандартный сайт если он есть
+    if [[ -f /etc/nginx/sites-available/default ]] && [[ ! -f /etc/nginx/sites-enabled/default ]]; then
+        ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default 2>/dev/null
     fi
 
     step "Перезапуск Nginx..."
@@ -1701,7 +1720,7 @@ uninstall_telemt_panel() {
     step "Обновление systemd..."
     systemctl daemon-reload
 
-    success "Web панель Telemt полностью удалена"
+    success "Web панель Telemt полностью удалена! Telemt и Telegram бот остались без изменений."
     pause
 }
 
