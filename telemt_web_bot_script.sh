@@ -1585,7 +1585,7 @@ uninstall_bot() {
 }
 
 # ============================================
-# Функции для Web панели Telemt Panel
+# Функции для Web панели Telemt Panel (С ИСПРАВЛЕНИЕМ WEBSOCKET)
 # ============================================
 install_telemt_panel() {
     clear
@@ -1659,10 +1659,12 @@ install_telemt_panel() {
     read -p "Выберите [1-2]: " cert_type
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
+    # Установка зависимостей для сборки
     step "Установка зависимостей для сборки..."
     apt update -qq
     apt install -y golang-go git make npm nodejs
 
+    # Клонируем репозиторий и собираем панель с исправлением WebSocket
     step "Клонирование репозитория telemt_panel..."
     cd /tmp
     rm -rf telemt_panel
@@ -1675,9 +1677,12 @@ install_telemt_panel() {
     npm run build
     cd ..
 
+    # ИСПРАВЛЕНИЕ WEBSOCKET
     step "Исправление CheckOrigin в коде..."
+    # Исправляем ws/handler.go
     sed -i '/CheckOrigin:/,/^[[:space:]]*},/c\
         CheckOrigin: func(r *http.Request) bool { return true; },' internal/ws/handler.go
+    # Исправляем logs/handler.go
     sed -i 's/CheckOrigin: checkOrigin,/CheckOrigin: func(r *http.Request) bool { return true; },/' internal/logs/handler.go
 
     step "Сборка бинарника..."
