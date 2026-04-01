@@ -336,7 +336,7 @@ uninstall_telemt() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ TELEMT (НОВЫЙ ПУНКТ 15)
+# ОБНОВЛЕНИЕ TELEMT
 # ============================================
 update_telemt() {
     clear
@@ -353,96 +353,72 @@ update_telemt() {
 
     step "Получение текущей версии..."
     CURRENT_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP 'v\K[\d.]+' | head -1)
-    echo -e "${CYAN}Текущая версия:${NC} ${YELLOW}$CURRENT_VERSION${NC}"
+    if [[ -z "$CURRENT_VERSION" ]]; then
+        CURRENT_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
+    fi
+    echo -e "${CYAN}Текущая версия:${NC} ${YELLOW}${CURRENT_VERSION:-не определена}${NC}"
     echo ""
 
     step "Проверка доступных версий на GitHub..."
 
-    # Получаем последние версии
     cd /tmp
     rm -rf telemt
     git clone --depth 1 https://github.com/telemt/telemt.git 2>/dev/null
     cd telemt
 
-    # Получаем все теги (версии)
+    # Получаем все теги
     git fetch --tags 2>/dev/null
 
-    # Получаем последние версии (стабильные и pre-release)
-    ALL_TAGS=$(git tag -l | sort -V | tail -10)
-
-    echo ""
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${YELLOW}Доступные версии (последние 10):${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-
-    # Выводим список версий с пометкой текущей
-    for tag in $ALL_TAGS; do
-        if [[ "$tag" == "$CURRENT_VERSION" ]]; then
-            echo -e "  ${GREEN}✓ $tag (текущая)${NC}"
-        else
-            # Проверяем, является ли версия pre-release
-            if [[ "$tag" == *"pre"* ]] || [[ "$tag" == *"rc"* ]] || [[ "$tag" == *"beta"* ]] || [[ "$tag" == *"alpha"* ]]; then
-                echo -e "  ${MAGENTA}$tag (pre-release)${NC}"
-            else
-                echo -e "  ${BLUE}$tag${NC}"
-            fi
-        fi
-    done
-
-    echo ""
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
-
-    # Находим последнюю версию (без pre-release)
-    LATEST_STABLE=$(git tag -l | grep -v "pre" | grep -v "rc" | grep -v "beta" | grep -v "alpha" | sort -V | tail -1)
+    # Находим последнюю стабильную (без pre, rc, beta, alpha)
+    LATEST_STABLE=$(git tag -l | grep -v "pre" | grep -v "rc" | grep -v "beta" | grep -v "alpha" | grep -v "toolchains" | grep -v "draft" | sort -V | tail -1)
 
     # Находим последнюю pre-release версию
-    LATEST_PRE=$(git tag -l | grep -E "(pre|rc|beta|alpha)" | sort -V | tail -1)
+    LATEST_PRE=$(git tag -l | grep -E "(pre|rc|beta|alpha)" | grep -v "toolchains" | sort -V | tail -1)
 
-    echo -e "${GREEN}Последняя стабильная версия:${NC} ${YELLOW}$LATEST_STABLE${NC}"
+    echo -e "${GREEN}📦 Последняя стабильная версия:${NC} ${YELLOW}$LATEST_STABLE${NC}"
     if [[ -n "$LATEST_PRE" ]]; then
-        echo -e "${MAGENTA}Последняя pre-release версия:${NC} ${YELLOW}$LATEST_PRE${NC}"
+        echo -e "${MAGENTA}🧪 Последняя pre-release версия:${NC} ${YELLOW}$LATEST_PRE${NC} (экспериментальная, может быть нестабильной)"
     fi
     echo ""
 
-    # Проверяем, есть ли обновления
-    if [[ "$CURRENT_VERSION" == "$LATEST_STABLE" ]] && [[ -z "$LATEST_PRE" || "$CURRENT_VERSION" == "$LATEST_PRE" ]]; then
-        info "У вас уже установлена последняя версия!"
+    # Проверяем, нужно ли обновление
+    NEED_UPDATE=false
+    
+    if [[ "$CURRENT_VERSION" != "$LATEST_STABLE" ]]; then
+        NEED_UPDATE=true
+    fi
+    if [[ -n "$LATEST_PRE" && "$CURRENT_VERSION" != "$LATEST_PRE" ]]; then
+        NEED_UPDATE=true
+    fi
+
+    if [[ "$NEED_UPDATE" == false ]]; then
+        info "У вас уже установлена последняя версия $CURRENT_VERSION!"
         pause
         return
     fi
 
     echo -e "${YELLOW}Доступны обновления:${NC}"
-    UPDATE_AVAILABLE=false
-
+    echo ""
     if [[ "$CURRENT_VERSION" != "$LATEST_STABLE" ]]; then
         echo -e "  ${GREEN}1) Стабильная: $LATEST_STABLE${NC}"
-        UPDATE_AVAILABLE=true
     fi
-
     if [[ -n "$LATEST_PRE" && "$CURRENT_VERSION" != "$LATEST_PRE" ]]; then
-        echo -e "  ${MAGENTA}2) Pre-release: $LATEST_PRE (экспериментальная)${NC}"
-        UPDATE_AVAILABLE=true
+        echo -e "  ${MAGENTA}2) Pre-release: $LATEST_PRE${NC} (новые функции, возможны баги)"
     fi
-
     echo -e "  ${RED}0) Пропустить${NC}"
     echo ""
-
-    if [[ "$UPDATE_AVAILABLE" == false ]]; then
-        info "Нет доступных обновлений"
-        pause
-        return
-    fi
 
     read -p "Выберите версию для обновления [0-2]: " update_choice
 
     case $update_choice in
         1)
             TARGET_VERSION="$LATEST_STABLE"
+            VERSION_TYPE="стабильную"
             ;;
         2)
             if [[ -n "$LATEST_PRE" ]]; then
                 TARGET_VERSION="$LATEST_PRE"
+                VERSION_TYPE="pre-release"
             else
                 warn "Pre-release версия не найдена"
                 pause
@@ -462,7 +438,7 @@ update_telemt() {
     esac
 
     echo ""
-    step "Обновление telemt до версии $TARGET_VERSION..."
+    step "Обновление telemt до $VERSION_TYPE версии $TARGET_VERSION..."
     
     # Останавливаем сервис
     systemctl stop telemt
@@ -485,11 +461,14 @@ update_telemt() {
     
     # Проверяем новую версию
     NEW_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP 'v\K[\d.]+' | head -1)
+    if [[ -z "$NEW_VERSION" ]]; then
+        NEW_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
+    fi
     
     if [[ "$NEW_VERSION" == "$TARGET_VERSION" ]]; then
         success "Telemt успешно обновлён до версии $NEW_VERSION!"
     else
-        warn "Обновление завершено, но версия $NEW_VERSION"
+        warn "Обновление завершено, текущая версия: $NEW_VERSION"
     fi
     
     pause
