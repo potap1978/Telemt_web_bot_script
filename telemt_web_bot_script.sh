@@ -2,6 +2,9 @@
 # Отключаем set -e в начале, будем обрабатывать ошибки вручную
 set +e
 
+# Переходим в безопасную директорию
+cd /root 2>/dev/null || cd /tmp 2>/dev/null || cd /
+
 # ============================================
 # Цвета и оформление
 # ============================================
@@ -245,7 +248,7 @@ use_middle_proxy = false
 
 [general.modes]
 classic = false
-secure = false
+secure = true
 tls = true
 
 [server]
@@ -258,6 +261,7 @@ listen = "127.0.0.1:9091"
 # === Anti-Censorship & Masking ===
 [censorship]
 tls_domain = "www.google.com"
+unknown_sni_policy = "Proxy"
 
 [access.users]
 temp_user = "$temp_secret"
@@ -366,13 +370,9 @@ update_telemt() {
     git clone --depth 1 https://github.com/telemt/telemt.git 2>/dev/null
     cd telemt
 
-    # Получаем все теги
     git fetch --tags 2>/dev/null
 
-    # Находим последнюю стабильную (без pre, rc, beta, alpha)
     LATEST_STABLE=$(git tag -l | grep -v "pre" | grep -v "rc" | grep -v "beta" | grep -v "alpha" | grep -v "toolchains" | grep -v "draft" | sort -V | tail -1)
-
-    # Находим последнюю pre-release версию
     LATEST_PRE=$(git tag -l | grep -E "(pre|rc|beta|alpha)" | grep -v "toolchains" | sort -V | tail -1)
 
     echo -e "${GREEN}📦 Последняя стабильная версия:${NC} ${YELLOW}$LATEST_STABLE${NC}"
@@ -381,9 +381,7 @@ update_telemt() {
     fi
     echo ""
 
-    # Проверяем, нужно ли обновление
     NEED_UPDATE=false
-    
     if [[ "$CURRENT_VERSION" != "$LATEST_STABLE" ]]; then
         NEED_UPDATE=true
     fi
@@ -439,43 +437,33 @@ update_telemt() {
 
     echo ""
     step "Обновление telemt до $VERSION_TYPE версии $TARGET_VERSION..."
-    
-    # Останавливаем сервис
+
     systemctl stop telemt
-    
-    # Переключаемся на нужную версию
     git checkout "$TARGET_VERSION" 2>/dev/null
-    
-    # Собираем
     cargo build --release
-    
-    # Устанавливаем
     cp target/release/telemt /usr/local/bin/telemt
     chmod +x /usr/local/bin/telemt
     chown telemt:telemt /usr/local/bin/telemt
-    
-    # Запускаем
     systemctl start telemt
-    
+
     sleep 2
-    
-    # Проверяем новую версию
+
     NEW_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP 'v\K[\d.]+' | head -1)
     if [[ -z "$NEW_VERSION" ]]; then
         NEW_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
     fi
-    
+
     if [[ "$NEW_VERSION" == "$TARGET_VERSION" ]]; then
         success "Telemt успешно обновлён до версии $NEW_VERSION!"
     else
         warn "Обновление завершено, текущая версия: $NEW_VERSION"
     fi
-    
+
     pause
 }
 
 # ============================================
-# Управление пользователями
+# Управление пользователями (С ГЕНЕРАЦИЕЙ DD И EE ССЫЛОК)
 # ============================================
 add_user() {
     clear
@@ -491,9 +479,11 @@ add_user() {
 
     current_sni=$(grep -oP 'tls_domain = "\K[^"]+' $TELEMT_CONFIG 2>/dev/null || echo "www.google.com")
     current_port=$(grep -oP 'port = \K\d+' $TELEMT_CONFIG 2>/dev/null || echo "7443")
+    current_secure=$(grep -oP 'secure = \K\w+' $TELEMT_CONFIG 2>/dev/null || echo "false")
 
     echo -e "${CYAN}Текущий SNI сервера:${NC} ${YELLOW}$current_sni${NC}"
     echo -e "${CYAN}Текущий порт:${NC} ${YELLOW}$current_port${NC}"
+    echo -e "${CYAN}Режим secure (DD-mode):${NC} ${YELLOW}$current_secure${NC}"
     echo ""
 
     read -p "Введите имя пользователя (тег): " username
@@ -513,14 +503,20 @@ add_user() {
     fi
 
     echo ""
+    echo -e "${CYAN}Выберите тип секрета:${NC}"
+    echo "  1) EE (стандартный, с SNI маскировкой)"
+    echo "  2) DD (secure mode, лучше обходит DPI)"
+    read -p "Выберите [1-2]: " secret_type
+
+    echo ""
     echo -e "${CYAN}Ограничение по IP:${NC}"
     echo "  Если включить, ссылкой сможет пользоваться только один человек одновременно"
-    echo "  (с одного IP-адреса)"
     read -p "Установить лимит 1 IP на пользователя? (y/N): " limit_ip
 
     secret_random=$(openssl rand -hex 16)
-    sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000)
-    full_secret="ee${secret_random}${sni_hex}"
+    sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000 | tr -d '\n')
+    ee_secret="ee${secret_random}${sni_hex}"
+    dd_secret="dd${secret_random}"
 
     if ! grep -q "^\[access.users\]" $TELEMT_CONFIG; then
         echo "" >> $TELEMT_CONFIG
@@ -558,8 +554,6 @@ add_user() {
     sleep 2
 
     server_ip=$(get_server_ip)
-    tg_link="tg://proxy?server=$server_ip&port=$current_port&secret=$full_secret"
-    https_link="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$full_secret"
 
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -567,16 +561,28 @@ add_user() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}Имя:${NC} $username"
     echo -e "${YELLOW}Секрет (32 hex):${NC} $secret_random"
-    if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
-        echo -e "${YELLOW}Ограничение:${NC} ${GREEN}1 IP одновременно${NC}"
+    
+    if [[ "$secret_type" == "2" ]]; then
+        echo -e "${GREEN}📱 Ссылка DD-mode (рекомендуется для обхода DPI):${NC}"
+        echo -e "${GREEN}tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret${NC}"
+        echo ""
+        echo -e "${BLUE}📱 Ссылка EE-mode (стандартная):${NC}"
+        echo -e "${BLUE}tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
     else
-        echo -e "${YELLOW}Ограничение:${NC} без ограничений"
+        echo -e "${BLUE}📱 Ссылка EE-mode (стандартная):${NC}"
+        echo -e "${BLUE}tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
+        if [[ "$current_secure" == "true" ]]; then
+            echo ""
+            echo -e "${GREEN}📱 Ссылка DD-mode (рекомендуется для обхода DPI):${NC}"
+            echo -e "${GREEN}tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret${NC}"
+        fi
     fi
-    echo -e "${YELLOW}📱 TG ссылка (нажмите для установки):${NC}"
-    echo -e "${GREEN}$tg_link${NC}"
-    echo ""
-    echo -e "${YELLOW}🌐 HTTP ссылка (для копирования):${NC}"
-    echo -e "${GREEN}$https_link${NC}"
+    
+    if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  Ограничение:${NC} ${GREEN}1 IP одновременно${NC}"
+    fi
+    
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     pause
@@ -596,11 +602,13 @@ list_users() {
 
     current_sni=$(grep -oP 'tls_domain = "\K[^"]+' $TELEMT_CONFIG 2>/dev/null || echo "www.google.com")
     current_port=$(grep -oP 'port = \K\d+' $TELEMT_CONFIG 2>/dev/null || echo "7443")
+    current_secure=$(grep -oP 'secure = \K\w+' $TELEMT_CONFIG 2>/dev/null || echo "false")
     server_ip=$(get_server_ip)
 
     echo -e "${CYAN}Глобальный SNI сервера:${NC} ${YELLOW}$current_sni${NC}"
     echo -e "${CYAN}Порт:${NC} ${YELLOW}$current_port${NC}"
     echo -e "${CYAN}IP сервера:${NC} ${YELLOW}$server_ip${NC}"
+    echo -e "${CYAN}Режим secure (DD-mode):${NC} ${YELLOW}$current_secure${NC}"
     echo ""
 
     users=$(get_users_list)
@@ -636,14 +644,17 @@ list_users() {
                 limit_display="${YELLOW}$limit${NC}"
             fi
 
-            sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000)
-            full_secret="ee${secret}${sni_hex}"
-            tg_link="tg://proxy?server=$server_ip&port=$current_port&secret=$full_secret"
-            https_link="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$full_secret"
+            sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000 | tr -d '\n')
+            ee_secret="ee${secret}${sni_hex}"
+            dd_secret="dd${secret}"
+            tg_link_ee="tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
+            tg_link_dd="tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
 
             printf "%-4s %-20s %-40s ${limit_display}\n" "$line_num" "$username" "$secret"
-            echo -e "    ${GREEN}📱 TG ссылка:${NC} $tg_link"
-            echo -e "    ${BLUE}🌐 HTTP ссылка:${NC} $https_link"
+            echo -e "    ${BLUE}📱 EE ссылка:${NC} $tg_link_ee"
+            if [[ "$current_secure" == "true" ]]; then
+                echo -e "    ${GREEN}📱 DD ссылка (рекомендуется):${NC} $tg_link_dd"
+            fi
             echo ""
             ((line_num++))
         fi
@@ -1058,6 +1069,16 @@ def get_current_sni():
         pass
     return "www.google.com"
 
+def get_current_secure():
+    try:
+        with open(TELEMT_CONFIG, 'r') as f:
+            for line in f:
+                if 'secure =' in line and not line.startswith('#'):
+                    return line.split('=')[1].strip()
+    except:
+        pass
+    return "false"
+
 def get_users():
     users = []
     try:
@@ -1247,6 +1268,7 @@ def get_server_info():
             f"🌐 *IP:* `{get_server_ip()}`\n"
             f"🔌 *Порт:* `{get_current_port()}`\n"
             f"🔒 *SNI:* `{get_current_sni()}`\n"
+            f"🔐 *Secure mode:* `{get_current_secure()}`\n"
             f"👥 *Пользователей:* {len(users)}")
 
 def get_main_keyboard():
@@ -1296,6 +1318,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         current_sni = get_current_sni()
         current_port = get_current_port()
+        current_secure = get_current_secure()
         server_ip = get_server_ip()
         sni_hex = subprocess.run(['xxd', '-p'], input=current_sni, capture_output=True, text=True).stdout.strip().replace('\n', '')
 
@@ -1304,13 +1327,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             limit = get_user_limit(user['name'])
             limit_text = f" 🔒 лимит: {limit} IP" if limit > 0 else ""
 
-            full_secret = f"ee{user['secret']}{sni_hex}"
-            tg_link = f"tg://proxy?server={server_ip}&port={current_port}&secret={full_secret}"
-            https_link = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={full_secret}"
+            ee_secret = f"ee{user['secret']}{sni_hex}"
+            dd_secret = f"dd{user['secret']}"
+            tg_link_ee = f"tg://proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
+            tg_link_dd = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
 
             text += f"*{i}. {user['name']}*{limit_text}\n"
-            text += f"📱 TG: `{tg_link}`\n"
-            text += f"🌐 HTTP: `{https_link}`\n\n"
+            text += f"📱 EE: `{tg_link_ee}`\n"
+            if current_secure == "true":
+                text += f"📱 DD (рекомендуется): `{tg_link_dd}`\n"
+            text += "\n"
 
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
 
@@ -1412,9 +1438,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if add_user_to_config(text, random_part):
             ip = get_server_ip()
             port = get_current_port()
-            tg_link = f"tg://proxy?server={ip}&port={port}&secret={secret}"
-            https_link = f"https://t.me/proxy?server={ip}&port={port}&secret={secret}"
-            await update.message.reply_text(f"✅ *Пользователь добавлен!*\n\n👤 *Имя:* `{text}`\n\n🔗 *Ссылка для Telegram (нажмите для установки):*\n{tg_link}\n\n📋 *Ссылка для копирования:*\n`{https_link}`", parse_mode='Markdown')
+            sni = get_current_sni()
+            sni_hex = subprocess.run(['xxd', '-p'], input=sni, capture_output=True, text=True).stdout.strip().replace('\n', '')
+            ee_secret = f"ee{random_part}{sni_hex}"
+            dd_secret = f"dd{random_part}"
+            tg_link_ee = f"tg://proxy?server={ip}&port={port}&secret={ee_secret}"
+            tg_link_dd = f"tg://proxy?server={ip}&port={port}&secret={dd_secret}"
+            await update.message.reply_text(f"✅ *Пользователь добавлен!*\n\n👤 *Имя:* `{text}`\n\n🔗 *EE ссылка:*\n`{tg_link_ee}`\n\n🔗 *DD ссылка (рекомендуется):*\n`{tg_link_dd}`", parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ Ошибка при добавлении пользователя")
         await update.message.reply_text("🤖 *Telemt Bot*\n\n*Передай привеД ПОТАПу !!!*\n\nВыберите действие:", reply_markup=get_main_keyboard(), parse_mode='Markdown')
@@ -1569,14 +1599,12 @@ install_telemt_panel() {
     echo -e "${MAGENTA}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    # Проверка наличия telemt
     if ! check_telemt_installed; then
         error "Сначала установите telemt (пункт 1)"
         pause
         return
     fi
 
-    # Проверка наличия telemt API
     if ! grep -q "enabled = true" $TELEMT_CONFIG || ! grep -q "listen = \"127.0.0.1:9091\"" $TELEMT_CONFIG; then
         error "В конфиге telemt не включён API. Пожалуйста, проверьте конфиг."
         pause
@@ -1594,7 +1622,6 @@ install_telemt_panel() {
         return
     fi
 
-    # Запрос порта для веб-панели
     echo ""
     read -p "Введите порт для веб-панели (по умолчанию 3333, от 1024 до 65535): " panel_port
     if [[ -z "$panel_port" ]]; then
@@ -1605,7 +1632,6 @@ install_telemt_panel() {
         panel_port="3333"
     fi
 
-    # Проверка, не занят ли порт
     if ss -tlnp | grep -q ":$panel_port "; then
         warn "Порт $panel_port уже занят!"
         read -p "Использовать другой порт? (y/N): " change_port_choice
@@ -1619,7 +1645,6 @@ install_telemt_panel() {
         fi
     fi
 
-    # Запрос логина и пароля для панели
     echo ""
     read -p "Введите логин администратора панели (по умолчанию admin): " panel_user
     panel_user=${panel_user:-admin}
@@ -1631,7 +1656,6 @@ install_telemt_panel() {
         warn "Пароль не введён. Установлен пароль по умолчанию: admin"
     fi
 
-    # ЗАПРОС ТИПА СЕРТИФИКАТОВ
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}ВЫБОР СЕРТИФИКАТОВ:${NC}"
@@ -1640,12 +1664,10 @@ install_telemt_panel() {
     read -p "Выберите [1-2]: " cert_type
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    # Установка зависимостей для сборки
     step "Установка зависимостей для сборки..."
     apt update -qq
     apt install -y golang-go git make npm nodejs
 
-    # Клонируем репозиторий и собираем панель с исправлением WebSocket
     step "Клонирование репозитория telemt_panel..."
     cd /tmp
     rm -rf telemt_panel
@@ -1659,10 +1681,8 @@ install_telemt_panel() {
     cd ..
 
     step "Исправление CheckOrigin в коде..."
-    # Исправляем ws/handler.go
     sed -i '/CheckOrigin:/,/^[[:space:]]*},/c\
         CheckOrigin: func(r *http.Request) bool { return true; },' internal/ws/handler.go
-    # Исправляем logs/handler.go
     sed -i 's/CheckOrigin: checkOrigin,/CheckOrigin: func(r *http.Request) bool { return true; },/' internal/logs/handler.go
 
     step "Сборка бинарника..."
@@ -1675,10 +1695,8 @@ install_telemt_panel() {
     chmod +x /opt/bin/telemt/telemt-panel
     chown telemt:telemt /opt/bin/telemt/telemt-panel 2>/dev/null || true
 
-    # Генерируем JWT секрет
     jwt_secret=$(openssl rand -hex 32)
 
-    # Генерируем bcrypt хеш пароля
     step "Генерация хеша пароля..."
     panel_password_hash=$(echo "$panel_password" | /opt/bin/telemt/telemt-panel hash-password 2>/dev/null | grep -oP '\$2a\$[^\s]+' | head -1)
     if [[ -z "$panel_password_hash" ]]; then
@@ -1686,7 +1704,6 @@ install_telemt_panel() {
         panel_password="admin"
     fi
 
-    # Создаём конфиг панели
     mkdir -p /opt/etc/telemt-panel
     cat > $PANEL_CONFIG << EOF
 listen = "127.0.0.1:8080"
@@ -1787,7 +1804,6 @@ EOF
     fi
 
     step "Запуск сервисов..."
-    # Останавливаем старый сервис если есть
     systemctl stop telemt-panel 2>/dev/null
 
     cat > $PANEL_SERVICE << EOF
@@ -2005,6 +2021,9 @@ show_status() {
 
     current_sni=$(grep -oP 'tls_domain = "\K[^"]+' $TELEMT_CONFIG 2>/dev/null || echo "не задан")
     echo -e "${CYAN}● SNI:${NC} $current_sni"
+
+    current_secure=$(grep -oP 'secure = \K\w+' $TELEMT_CONFIG 2>/dev/null || echo "false")
+    echo -e "${CYAN}● Secure mode (DD):${NC} $current_secure"
 
     users_count=$(get_users_count)
     echo -e "${CYAN}● Пользователей:${NC} $users_count"
