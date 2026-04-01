@@ -336,6 +336,166 @@ uninstall_telemt() {
 }
 
 # ============================================
+# ОБНОВЛЕНИЕ TELEMT (НОВЫЙ ПУНКТ 15)
+# ============================================
+update_telemt() {
+    clear
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}${BOLD}           ПРОВЕРКА ОБНОВЛЕНИЙ TELEMT${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    if ! check_telemt_installed; then
+        error "Telemt не установлен. Сначала установите (пункт 1)"
+        pause
+        return
+    fi
+
+    step "Получение текущей версии..."
+    CURRENT_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP 'v\K[\d.]+' | head -1)
+    echo -e "${CYAN}Текущая версия:${NC} ${YELLOW}$CURRENT_VERSION${NC}"
+    echo ""
+
+    step "Проверка доступных версий на GitHub..."
+
+    # Получаем последние версии
+    cd /tmp
+    rm -rf telemt
+    git clone --depth 1 https://github.com/telemt/telemt.git 2>/dev/null
+    cd telemt
+
+    # Получаем все теги (версии)
+    git fetch --tags 2>/dev/null
+
+    # Получаем последние версии (стабильные и pre-release)
+    ALL_TAGS=$(git tag -l | sort -V | tail -10)
+
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Доступные версии (последние 10):${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # Выводим список версий с пометкой текущей
+    for tag in $ALL_TAGS; do
+        if [[ "$tag" == "$CURRENT_VERSION" ]]; then
+            echo -e "  ${GREEN}✓ $tag (текущая)${NC}"
+        else
+            # Проверяем, является ли версия pre-release
+            if [[ "$tag" == *"pre"* ]] || [[ "$tag" == *"rc"* ]] || [[ "$tag" == *"beta"* ]] || [[ "$tag" == *"alpha"* ]]; then
+                echo -e "  ${MAGENTA}$tag (pre-release)${NC}"
+            else
+                echo -e "  ${BLUE}$tag${NC}"
+            fi
+        fi
+    done
+
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    # Находим последнюю версию (без pre-release)
+    LATEST_STABLE=$(git tag -l | grep -v "pre" | grep -v "rc" | grep -v "beta" | grep -v "alpha" | sort -V | tail -1)
+
+    # Находим последнюю pre-release версию
+    LATEST_PRE=$(git tag -l | grep -E "(pre|rc|beta|alpha)" | sort -V | tail -1)
+
+    echo -e "${GREEN}Последняя стабильная версия:${NC} ${YELLOW}$LATEST_STABLE${NC}"
+    if [[ -n "$LATEST_PRE" ]]; then
+        echo -e "${MAGENTA}Последняя pre-release версия:${NC} ${YELLOW}$LATEST_PRE${NC}"
+    fi
+    echo ""
+
+    # Проверяем, есть ли обновления
+    if [[ "$CURRENT_VERSION" == "$LATEST_STABLE" ]] && [[ -z "$LATEST_PRE" || "$CURRENT_VERSION" == "$LATEST_PRE" ]]; then
+        info "У вас уже установлена последняя версия!"
+        pause
+        return
+    fi
+
+    echo -e "${YELLOW}Доступны обновления:${NC}"
+    UPDATE_AVAILABLE=false
+
+    if [[ "$CURRENT_VERSION" != "$LATEST_STABLE" ]]; then
+        echo -e "  ${GREEN}1) Стабильная: $LATEST_STABLE${NC}"
+        UPDATE_AVAILABLE=true
+    fi
+
+    if [[ -n "$LATEST_PRE" && "$CURRENT_VERSION" != "$LATEST_PRE" ]]; then
+        echo -e "  ${MAGENTA}2) Pre-release: $LATEST_PRE (экспериментальная)${NC}"
+        UPDATE_AVAILABLE=true
+    fi
+
+    echo -e "  ${RED}0) Пропустить${NC}"
+    echo ""
+
+    if [[ "$UPDATE_AVAILABLE" == false ]]; then
+        info "Нет доступных обновлений"
+        pause
+        return
+    fi
+
+    read -p "Выберите версию для обновления [0-2]: " update_choice
+
+    case $update_choice in
+        1)
+            TARGET_VERSION="$LATEST_STABLE"
+            ;;
+        2)
+            if [[ -n "$LATEST_PRE" ]]; then
+                TARGET_VERSION="$LATEST_PRE"
+            else
+                warn "Pre-release версия не найдена"
+                pause
+                return
+            fi
+            ;;
+        0)
+            info "Обновление отменено"
+            pause
+            return
+            ;;
+        *)
+            error "Неверный выбор"
+            pause
+            return
+            ;;
+    esac
+
+    echo ""
+    step "Обновление telemt до версии $TARGET_VERSION..."
+    
+    # Останавливаем сервис
+    systemctl stop telemt
+    
+    # Переключаемся на нужную версию
+    git checkout "$TARGET_VERSION" 2>/dev/null
+    
+    # Собираем
+    cargo build --release
+    
+    # Устанавливаем
+    cp target/release/telemt /usr/local/bin/telemt
+    chmod +x /usr/local/bin/telemt
+    chown telemt:telemt /usr/local/bin/telemt
+    
+    # Запускаем
+    systemctl start telemt
+    
+    sleep 2
+    
+    # Проверяем новую версию
+    NEW_VERSION=$(/usr/local/bin/telemt --version 2>/dev/null | grep -oP 'v\K[\d.]+' | head -1)
+    
+    if [[ "$NEW_VERSION" == "$TARGET_VERSION" ]]; then
+        success "Telemt успешно обновлён до версии $NEW_VERSION!"
+    else
+        warn "Обновление завершено, но версия $NEW_VERSION"
+    fi
+    
+    pause
+}
+
+# ============================================
 # Управление пользователями
 # ============================================
 add_user() {
@@ -1763,7 +1923,7 @@ uninstall_telemt_panel() {
 }
 
 # ============================================
-# СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ (НОВЫЙ ПУНКТ 14)
+# СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ
 # ============================================
 change_panel_credentials() {
     clear
@@ -1777,12 +1937,10 @@ change_panel_credentials() {
         return
     fi
 
-    # Показываем текущие данные
     current_username=$(grep -oP 'username = "\K[^"]+' $PANEL_CONFIG 2>/dev/null || echo "admin")
     echo -e "${CYAN}Текущий логин:${NC} ${YELLOW}$current_username${NC}"
     echo ""
 
-    # Вводим новые данные
     read -p "Введите новый логин (оставьте пустым чтобы оставить $current_username): " new_username
     new_username=${new_username:-$current_username}
 
@@ -1790,12 +1948,10 @@ change_panel_credentials() {
     echo ""
 
     if [[ -z "$new_password" ]]; then
-        # Только меняем логин
         step "Смена логина..."
         sed -i "s/username = \".*\"/username = \"$new_username\"/" $PANEL_CONFIG
         success "Логин изменён на $new_username"
     else
-        # Меняем логин и пароль
         step "Генерация хеша нового пароля..."
         new_hash=$(echo "$new_password" | /opt/bin/telemt/telemt-panel hash-password 2>/dev/null | grep -oP '\$2a\$[^\s]+' | head -1)
         
@@ -1814,12 +1970,10 @@ change_panel_credentials() {
         echo -e "${GREEN}Новый пароль:${NC} $new_password"
     fi
 
-    # Перезапускаем панель
     step "Перезапуск панели..."
     systemctl restart telemt-panel
     sleep 2
 
-    echo ""
     info "Изменения вступят в силу при следующем входе в панель"
     pause
 }
@@ -1938,6 +2092,9 @@ show_menu() {
     echo -e "  ${RED}13)${NC} Удалить Web панель Telemt"
     echo -e "  ${CYAN}14)${NC} Сменить логин/пароль Web панели"
     echo ""
+    echo -e "${GREEN}  ОБНОВЛЕНИЕ${NC}"
+    echo -e "  ${GREEN}15)${NC} Проверить обновления telemt"
+    echo ""
     echo -e "${RED}  0)${NC} Выход"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1967,13 +2124,14 @@ main() {
             12) install_telemt_panel ;;
             13) uninstall_telemt_panel ;;
             14) change_panel_credentials ;;
+            15) update_telemt ;;
             0) 
                 clear
                 info "До свидания!"
                 exit 0
                 ;;
             *) 
-                error "Неверный выбор. Пожалуйста, выберите от 0 до 14"
+                error "Неверный выбор. Пожалуйста, выберите от 0 до 15"
                 sleep 2
                 ;;
         esac
