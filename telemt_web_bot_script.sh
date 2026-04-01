@@ -463,7 +463,7 @@ update_telemt() {
 }
 
 # ============================================
-# Управление пользователями (С ГЕНЕРАЦИЕЙ DD И EE ССЫЛОК)
+# Управление пользователями (С DD И EE ССЫЛКАМИ)
 # ============================================
 add_user() {
     clear
@@ -501,12 +501,6 @@ add_user() {
         pause
         return
     fi
-
-    echo ""
-    echo -e "${CYAN}Выберите тип секрета:${NC}"
-    echo "  1) EE (стандартный, с SNI маскировкой)"
-    echo "  2) DD (secure mode, лучше обходит DPI)"
-    read -p "Выберите [1-2]: " secret_type
 
     echo ""
     echo -e "${CYAN}Ограничение по IP:${NC}"
@@ -561,22 +555,12 @@ add_user() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}Имя:${NC} $username"
     echo -e "${YELLOW}Секрет (32 hex):${NC} $secret_random"
-    
-    if [[ "$secret_type" == "2" ]]; then
-        echo -e "${GREEN}📱 Ссылка DD-mode (рекомендуется для обхода DPI):${NC}"
-        echo -e "${GREEN}tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret${NC}"
-        echo ""
-        echo -e "${BLUE}📱 Ссылка EE-mode (стандартная):${NC}"
-        echo -e "${BLUE}tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
-    else
-        echo -e "${BLUE}📱 Ссылка EE-mode (стандартная):${NC}"
-        echo -e "${BLUE}tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
-        if [[ "$current_secure" == "true" ]]; then
-            echo ""
-            echo -e "${GREEN}📱 Ссылка DD-mode (рекомендуется для обхода DPI):${NC}"
-            echo -e "${GREEN}tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret${NC}"
-        fi
-    fi
+    echo ""
+    echo -e "${GREEN}📱 Ссылка DD-mode (рекомендуется для обхода DPI):${NC}"
+    echo -e "${GREEN}tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret${NC}"
+    echo ""
+    echo -e "${BLUE}📱 Ссылка EE-mode (стандартная, с SNI маскировкой):${NC}"
+    echo -e "${BLUE}tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
     
     if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
         echo ""
@@ -651,10 +635,8 @@ list_users() {
             tg_link_dd="tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
 
             printf "%-4s %-20s %-40s ${limit_display}\n" "$line_num" "$username" "$secret"
+            echo -e "    ${GREEN}📱 DD ссылка (рекомендуется):${NC} $tg_link_dd"
             echo -e "    ${BLUE}📱 EE ссылка:${NC} $tg_link_ee"
-            if [[ "$current_secure" == "true" ]]; then
-                echo -e "    ${GREEN}📱 DD ссылка (рекомендуется):${NC} $tg_link_dd"
-            fi
             echo ""
             ((line_num++))
         fi
@@ -1333,9 +1315,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tg_link_dd = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
 
             text += f"*{i}. {user['name']}*{limit_text}\n"
+            text += f"📱 DD (рекомендуется): `{tg_link_dd}`\n"
             text += f"📱 EE: `{tg_link_ee}`\n"
-            if current_secure == "true":
-                text += f"📱 DD (рекомендуется): `{tg_link_dd}`\n"
             text += "\n"
 
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
@@ -1444,7 +1425,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dd_secret = f"dd{random_part}"
             tg_link_ee = f"tg://proxy?server={ip}&port={port}&secret={ee_secret}"
             tg_link_dd = f"tg://proxy?server={ip}&port={port}&secret={dd_secret}"
-            await update.message.reply_text(f"✅ *Пользователь добавлен!*\n\n👤 *Имя:* `{text}`\n\n🔗 *EE ссылка:*\n`{tg_link_ee}`\n\n🔗 *DD ссылка (рекомендуется):*\n`{tg_link_dd}`", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ *Пользователь добавлен!*\n\n👤 *Имя:* `{text}`\n\n🔗 *DD ссылка (рекомендуется):*\n`{tg_link_dd}`\n\n🔗 *EE ссылка:*\n`{tg_link_ee}`", parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ Ошибка при добавлении пользователя")
         await update.message.reply_text("🤖 *Telemt Bot*\n\n*Передай привеД ПОТАПу !!!*\n\nВыберите действие:", reply_markup=get_main_keyboard(), parse_mode='Markdown')
