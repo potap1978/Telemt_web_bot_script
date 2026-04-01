@@ -463,7 +463,7 @@ update_telemt() {
 }
 
 # ============================================
-# Управление пользователями (С DD И EE ССЫЛКАМИ)
+# Управление пользователями (С DD И EE ССЫЛКАМИ + HTTP)
 # ============================================
 add_user() {
     clear
@@ -556,11 +556,15 @@ add_user() {
     echo -e "${YELLOW}Имя:${NC} $username"
     echo -e "${YELLOW}Секрет (32 hex):${NC} $secret_random"
     echo ""
-    echo -e "${GREEN}📱 Ссылка DD-mode (рекомендуется для обхода DPI):${NC}"
+    echo -e "${GREEN}📱 TG ссылка DD-mode (рекомендуется):${NC}"
     echo -e "${GREEN}tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret${NC}"
+    echo -e "${GREEN}🌐 HTTP ссылка DD-mode:${NC}"
+    echo -e "${GREEN}https://t.me/proxy?server=$server_ip&port=$current_port&secret=$dd_secret${NC}"
     echo ""
-    echo -e "${BLUE}📱 Ссылка EE-mode (стандартная, с SNI маскировкой):${NC}"
+    echo -e "${BLUE}📱 TG ссылка EE-mode (стандартная):${NC}"
     echo -e "${BLUE}tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
+    echo -e "${BLUE}🌐 HTTP ссылка EE-mode:${NC}"
+    echo -e "${BLUE}https://t.me/proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
     
     if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
         echo ""
@@ -633,10 +637,14 @@ list_users() {
             dd_secret="dd${secret}"
             tg_link_ee="tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
             tg_link_dd="tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
+            http_link_ee="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
+            http_link_dd="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
 
             printf "%-4s %-20s %-40s ${limit_display}\n" "$line_num" "$username" "$secret"
-            echo -e "    ${GREEN}📱 DD ссылка (рекомендуется):${NC} $tg_link_dd"
-            echo -e "    ${BLUE}📱 EE ссылка:${NC} $tg_link_ee"
+            echo -e "    ${GREEN}📱 DD TG ссылка:${NC} $tg_link_dd"
+            echo -e "    ${GREEN}🌐 DD HTTP ссылка:${NC} $http_link_dd"
+            echo -e "    ${BLUE}📱 EE TG ссылка:${NC} $tg_link_ee"
+            echo -e "    ${BLUE}🌐 EE HTTP ссылка:${NC} $http_link_ee"
             echo ""
             ((line_num++))
         fi
@@ -1313,10 +1321,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dd_secret = f"dd{user['secret']}"
             tg_link_ee = f"tg://proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
             tg_link_dd = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
+            http_link_ee = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
+            http_link_dd = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
 
             text += f"*{i}. {user['name']}*{limit_text}\n"
-            text += f"📱 DD (рекомендуется): `{tg_link_dd}`\n"
-            text += f"📱 EE: `{tg_link_ee}`\n"
+            text += f"📱 DD TG: `{tg_link_dd}`\n"
+            text += f"🌐 DD HTTP: `{http_link_dd}`\n"
+            text += f"📱 EE TG: `{tg_link_ee}`\n"
+            text += f"🌐 EE HTTP: `{http_link_ee}`\n"
             text += "\n"
 
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
@@ -1425,7 +1437,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dd_secret = f"dd{random_part}"
             tg_link_ee = f"tg://proxy?server={ip}&port={port}&secret={ee_secret}"
             tg_link_dd = f"tg://proxy?server={ip}&port={port}&secret={dd_secret}"
-            await update.message.reply_text(f"✅ *Пользователь добавлен!*\n\n👤 *Имя:* `{text}`\n\n🔗 *DD ссылка (рекомендуется):*\n`{tg_link_dd}`\n\n🔗 *EE ссылка:*\n`{tg_link_ee}`", parse_mode='Markdown')
+            http_link_ee = f"https://t.me/proxy?server={ip}&port={port}&secret={ee_secret}"
+            http_link_dd = f"https://t.me/proxy?server={ip}&port={port}&secret={dd_secret}"
+            await update.message.reply_text(f"✅ *Пользователь добавлен!*\n\n👤 *Имя:* `{text}`\n\n🔗 *DD TG ссылка:*\n`{tg_link_dd}`\n\n🔗 *DD HTTP ссылка:*\n`{http_link_dd}`\n\n🔗 *EE TG ссылка:*\n`{tg_link_ee}`\n\n🔗 *EE HTTP ссылка:*\n`{http_link_ee}`", parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ Ошибка при добавлении пользователя")
         await update.message.reply_text("🤖 *Telemt Bot*\n\n*Передай привеД ПОТАПу !!!*\n\nВыберите действие:", reply_markup=get_main_keyboard(), parse_mode='Markdown')
