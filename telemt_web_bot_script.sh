@@ -186,10 +186,14 @@ install_telemt() {
         info "Скачивание rustup..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
         info "Установка Rust (это может занять несколько минут)..."
-        sh /tmp/rustup.sh -y --default-toolchain stable
+        echo ""
+        sh /tmp/rustup.sh -y --verbose 2>&1 | while read line; do
+            echo -e "    ${CYAN}rustup:${NC} $line"
+        done
         source "$HOME/.cargo/env"
         rm -f /tmp/rustup.sh
-        success "Rust установлен"
+        echo ""
+        success "Rust установлен: $(rustc --version 2>/dev/null)"
     else
         info "Rust уже установлен: $(rustc --version 2>/dev/null)"
     fi
@@ -201,7 +205,9 @@ install_telemt() {
     cd telemt
 
     step "Компиляция telemt (это может занять 5-10 минут)..."
-    cargo build --release
+    cargo build --release 2>&1 | while read line; do
+        echo -e "    ${CYAN}cargo:${NC} $line"
+    done
 
     step "Создание пользователя и директорий..."
     id -u $TELEMT_USER &>/dev/null || useradd -r -s /bin/false -d $DATA_DIR $TELEMT_USER
@@ -440,7 +446,9 @@ update_telemt() {
 
     systemctl stop telemt
     git checkout "$TARGET_VERSION" 2>/dev/null
-    cargo build --release
+    cargo build --release 2>&1 | while read line; do
+        echo -e "    ${CYAN}cargo:${NC} $line"
+    done
     cp target/release/telemt /usr/local/bin/telemt
     chmod +x /usr/local/bin/telemt
     chown telemt:telemt /usr/local/bin/telemt
@@ -463,7 +471,7 @@ update_telemt() {
 }
 
 # ============================================
-# Управление пользователями (С DD И EE ССЫЛКАМИ + HTTP)
+# Управление пользователями
 # ============================================
 add_user() {
     clear
@@ -1673,8 +1681,12 @@ install_telemt_panel() {
 
     step "Установка зависимостей фронтенда и сборка..."
     cd frontend
-    npm install
-    npm run build
+    npm install 2>&1 | while read line; do
+        echo -e "    ${CYAN}npm:${NC} $line"
+    done
+    npm run build 2>&1 | while read line; do
+        echo -e "    ${CYAN}npm build:${NC} $line"
+    done
     cd ..
 
     # ИСПРАВЛЕНИЕ WEBSOCKET
@@ -1686,8 +1698,12 @@ install_telemt_panel() {
     sed -i 's/CheckOrigin: checkOrigin,/CheckOrigin: func(r *http.Request) bool { return true; },/' internal/logs/handler.go
 
     step "Сборка бинарника..."
-    go mod download
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o telemt-panel .
+    go mod download 2>&1 | while read line; do
+        echo -e "    ${CYAN}go mod:${NC} $line"
+    done
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o telemt-panel . 2>&1 | while read line; do
+        echo -e "    ${CYAN}go build:${NC} $line"
+    done
 
     step "Установка бинарника..."
     mkdir -p /opt/bin/telemt
@@ -1766,8 +1782,7 @@ EOF
 
     cat > $PANEL_NGINX_CONF << EOF
 server {
-    listen $panel_port ssl;
-    http2 on;
+    listen $panel_port ssl http2;
     server_name _;
 
     ssl_certificate /etc/nginx/ssl/telemt-panel.crt;
@@ -1795,6 +1810,7 @@ EOF
         sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
     fi
 
+    # Проверяем и перезапускаем Nginx
     nginx -t
     systemctl restart nginx
 
@@ -1825,6 +1841,10 @@ EOF
     systemctl daemon-reload
     systemctl enable telemt-panel
     systemctl start telemt-panel
+
+    # Дополнительный перезапуск Nginx для гарантии
+    sleep 2
+    systemctl restart nginx
 
     sleep 3
 
