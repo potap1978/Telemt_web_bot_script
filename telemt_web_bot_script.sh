@@ -30,6 +30,7 @@ SERVICE_FILE="/etc/systemd/system/telemt.service"
 BOT_DIR="/opt/telemt-bot"
 BOT_SERVICE="/etc/systemd/system/telemt-bot.service"
 BOT_SCRIPT="$BOT_DIR/bot.py"
+TELEMT_API="http://127.0.0.1:9091"
 
 # Пути для Web панели
 PANEL_INSTALL_SCRIPT="/tmp/telemt-panel-install.sh"
@@ -78,6 +79,18 @@ check_panel_installed() {
     return 0
 }
 
+check_api_available() {
+    if curl -s -f "${TELEMT_API}/v1/users" >/dev/null 2>&1; then
+        return 0
+    else
+        warn "API недоступен. Убедитесь, что в конфиге включён API:"
+        echo "  [server.api]"
+        echo "  enabled = true"
+        echo "  listen = \"127.0.0.1:9091\""
+        return 1
+    fi
+}
+
 get_server_ip() {
     ipv4=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null)
     if [[ -n "$ipv4" && "$ipv4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -97,19 +110,25 @@ generate_random_hex() {
 }
 
 get_users_list() {
-    local in_users=0
-    while IFS= read -r line; do
-        if [[ "$line" == "[access.users]" ]]; then
-            in_users=1
-            continue
-        fi
-        if [[ $in_users -eq 1 ]] && [[ "$line" =~ ^\[ ]]; then
-            in_users=0
-        fi
-        if [[ $in_users -eq 1 ]] && [[ "$line" =~ ^[a-zA-Z0-9_-]+\ =\ \"[a-f0-9]{32}\"$ ]]; then
-            echo "$line"
-        fi
-    done < $TELEMT_CONFIG
+    if check_api_available 2>/dev/null; then
+        curl -s "${TELEMT_API}/v1/users" 2>/dev/null | grep -oP '"username":"\K[^"]+' | while read user; do
+            echo "$user = \"\""
+        done
+    else
+        local in_users=0
+        while IFS= read -r line; do
+            if [[ "$line" == "[access.users]" ]]; then
+                in_users=1
+                continue
+            fi
+            if [[ $in_users -eq 1 ]] && [[ "$line" =~ ^\[ ]]; then
+                in_users=0
+            fi
+            if [[ $in_users -eq 1 ]] && [[ "$line" =~ ^[a-zA-Z0-9_-]+\ =\ \"[a-f0-9]{32}\"$ ]]; then
+                echo "$line"
+            fi
+        done < $TELEMT_CONFIG
+    fi
 }
 
 get_users_count() {
@@ -144,31 +163,80 @@ ensure_at_least_one_user() {
 }
 
 # ============================================
-# Функция установки/обновления Rust (ИСПРАВЛЕНО)
+# API функции управления (БЕЗ ПЕРЕЗАГРУЗКИ)
+# ============================================
+api_add_user() {
+    local username="$1"
+    local secret="$2"
+    
+    curl -s -X POST "${TELEMT_API}/v1/users" \
+        -H "Content-Type: application/json" \
+        -d "{\"username\":\"$username\",\"secret\":\"$secret\"}" >/dev/null 2>&1
+    return $?
+}
+
+api_remove_user() {
+    local username="$1"
+    
+    curl -s -X DELETE "${TELEMT_API}/v1/users/${username}" >/dev/null 2>&1
+    return $?
+}
+
+api_set_user_limit() {
+    local username="$1"
+    local limit="$2"
+    
+    if ! grep -q "^\[access.user_max_unique_ips\]" $TELEMT_CONFIG; then
+        echo "" >> $TELEMT_CONFIG
+        echo "[access.user_max_unique_ips]" >> $TELEMT_CONFIG
+    fi
+    
+    sed -i "/^$username = [0-9]/d" $TELEMT_CONFIG
+    if [[ "$limit" != "0" ]]; then
+        sed -i "/^\[access.user_max_unique_ips\]/a $username = $limit" $TELEMT_CONFIG
+    fi
+    
+    fix_config_permissions
+    
+    if pgrep -x "telemt" > /dev/null; then
+        kill -HUP $(pgrep -x "telemt") 2>/dev/null
+    fi
+    
+    return 0
+}
+
+graceful_reload() {
+    if pgrep -x "telemt" > /dev/null; then
+        step "Graceful перезагрузка конфигурации..."
+        kill -HUP $(pgrep -x "telemt") 2>/dev/null
+        if [[ $? -eq 0 ]]; then
+            success "Конфигурация перезагружена (соединения не разорваны)"
+            return 0
+        fi
+    fi
+    warn "Не удалось выполнить graceful reload"
+    return 1
+}
+
+# ============================================
+# Функция установки/обновления Rust
 # ============================================
 install_rust() {
     step "Установка Rust через rustup (актуальная версия)..."
     
-    # Удаляем старую версию из apt, если есть
     apt remove -y cargo rustc 2>/dev/null
     
-    # Проверяем, установлен ли уже rustup
     if command -v rustup &>/dev/null; then
         info "Rust уже установлен, обновляем..."
         rustup update stable
     else
-        # Устанавливаем rustup
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         source "$HOME/.cargo/env"
         echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
     fi
     
-    # Проверяем установку
     if command -v cargo &>/dev/null; then
-        local rust_version=$(rustc --version 2>/dev/null)
-        local cargo_version=$(cargo --version 2>/dev/null)
-        success "Rust установлен: $rust_version"
-        info "Cargo: $cargo_version"
+        success "Rust установлен: $(rustc --version 2>/dev/null)"
         return 0
     else
         error "Не удалось установить Rust"
@@ -177,7 +245,7 @@ install_rust() {
 }
 
 # ============================================
-# Функции установки и удаления telemt (ИСПРАВЛЕНО)
+# Функции установки и удаления telemt
 # ============================================
 install_telemt() {
     clear
@@ -211,10 +279,9 @@ install_telemt() {
     elif command -v pacman &>/dev/null; then
         pacman -S --noconfirm curl git base-devel openssl xxd
     else
-        warn "Не удалось определить пакетный менеджер. Установите вручную: curl, git, build-essential, libssl-dev, xxd"
+        warn "Не удалось определить пакетный менеджер"
     fi
 
-    # Установка Rust через rustup (ИСПРАВЛЕНО)
     install_rust
     if [[ $? -ne 0 ]]; then
         error "Не удалось установить Rust. Установка прервана."
@@ -266,6 +333,7 @@ install_telemt() {
         echo ""
         echo -e "${CYAN}Порт по умолчанию:${NC} 7443"
         echo -e "${CYAN}SNI по умолчанию:${NC} www.google.com"
+        echo -e "${CYAN}API доступен:${NC} ${TELEMT_API}"
         echo -e "${CYAN}Для добавления пользователя выберите пункт 3${NC}"
     else
         warn "Сервис не запустился. Проверьте логи: journalctl -u telemt -n 20"
@@ -376,7 +444,7 @@ uninstall_telemt() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ TELEMT (ИСПРАВЛЕНО)
+# ОБНОВЛЕНИЕ TELEMT
 # ============================================
 update_telemt() {
     clear
@@ -391,18 +459,9 @@ update_telemt() {
         return
     fi
 
-    # Проверяем и обновляем Rust перед обновлением (ИСПРАВЛЕНО)
     if ! command -v cargo &>/dev/null; then
         warn "Rust не найден. Устанавливаем..."
         install_rust
-    else
-        cargo_version=$(cargo --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
-        if [[ -n "$cargo_version" ]] && [[ "$(echo "$cargo_version" | cut -d. -f1)" -lt 1 || "$(echo "$cargo_version" | cut -d. -f2)" -lt 80 ]]; then
-            warn "Версия Cargo $cargo_version устарела. Обновляем Rust..."
-            install_rust
-        else
-            info "Rust актуален: $(cargo --version)"
-        fi
     fi
 
     step "Получение текущей версии..."
@@ -427,15 +486,12 @@ update_telemt() {
 
     echo -e "${GREEN}📦 Последняя стабильная версия:${NC} ${YELLOW}$LATEST_STABLE${NC}"
     if [[ -n "$LATEST_PRE" ]]; then
-        echo -e "${MAGENTA}🧪 Последняя pre-release версия:${NC} ${YELLOW}$LATEST_PRE${NC} (экспериментальная, может быть нестабильной)"
+        echo -e "${MAGENTA}🧪 Последняя pre-release версия:${NC} ${YELLOW}$LATEST_PRE${NC}"
     fi
     echo ""
 
     NEED_UPDATE=false
     if [[ "$CURRENT_VERSION" != "$LATEST_STABLE" ]]; then
-        NEED_UPDATE=true
-    fi
-    if [[ -n "$LATEST_PRE" && "$CURRENT_VERSION" != "$LATEST_PRE" ]]; then
         NEED_UPDATE=true
     fi
 
@@ -447,31 +503,16 @@ update_telemt() {
 
     echo -e "${YELLOW}Доступны обновления:${NC}"
     echo ""
-    if [[ "$CURRENT_VERSION" != "$LATEST_STABLE" ]]; then
-        echo -e "  ${GREEN}1) Стабильная: $LATEST_STABLE${NC}"
-    fi
-    if [[ -n "$LATEST_PRE" && "$CURRENT_VERSION" != "$LATEST_PRE" ]]; then
-        echo -e "  ${MAGENTA}2) Pre-release: $LATEST_PRE${NC} (новые функции, возможны баги)"
-    fi
+    echo -e "  ${GREEN}1) Стабильная: $LATEST_STABLE${NC}"
     echo -e "  ${RED}0) Пропустить${NC}"
     echo ""
 
-    read -p "Выберите версию для обновления [0-2]: " update_choice
+    read -p "Выберите версию для обновления [0-1]: " update_choice
 
     case $update_choice in
         1)
             TARGET_VERSION="$LATEST_STABLE"
             VERSION_TYPE="стабильную"
-            ;;
-        2)
-            if [[ -n "$LATEST_PRE" ]]; then
-                TARGET_VERSION="$LATEST_PRE"
-                VERSION_TYPE="pre-release"
-            else
-                warn "Pre-release версия не найдена"
-                pause
-                return
-            fi
             ;;
         0)
             info "Обновление отменено"
@@ -491,10 +532,7 @@ update_telemt() {
     systemctl stop telemt
     git checkout "$TARGET_VERSION" 2>/dev/null
     
-    # Очистка перед сборкой
     cargo clean 2>/dev/null
-    
-    # Сборка
     cargo build --release 2>&1 | while read line; do
         echo -e "    ${CYAN}cargo:${NC} $line"
     done
@@ -528,7 +566,7 @@ update_telemt() {
 }
 
 # ============================================
-# Управление пользователями
+# УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (ЧЕРЕЗ API - БЕЗ ПЕРЕЗАГРУЗКИ)
 # ============================================
 add_user() {
     clear
@@ -538,6 +576,11 @@ add_user() {
     echo ""
 
     if ! check_telemt_installed; then
+        pause
+        return
+    fi
+
+    if ! check_api_available; then
         pause
         return
     fi
@@ -561,12 +604,6 @@ add_user() {
 
     [[ -z "$username" ]] && username="user_$(date +%s)"
 
-    if grep -q "^$username = " $TELEMT_CONFIG; then
-        error "Пользователь с именем '$username' уже существует!"
-        pause
-        return
-    fi
-
     echo ""
     echo -e "${CYAN}Ограничение по IP:${NC}"
     echo "  Если включить, ссылкой сможет пользоваться только один человек одновременно"
@@ -577,40 +614,28 @@ add_user() {
     ee_secret="ee${secret_random}${sni_hex}"
     dd_secret="dd${secret_random}"
 
-    if ! grep -q "^\[access.users\]" $TELEMT_CONFIG; then
-        echo "" >> $TELEMT_CONFIG
-        echo "[access.users]" >> $TELEMT_CONFIG
-    fi
-
-    sed -i "/^\[access.users\]/a $username = \"$secret_random\"" $TELEMT_CONFIG
-    fix_config_permissions
-
-    if ! grep -q "^$username = " $TELEMT_CONFIG; then
-        error "Не удалось добавить пользователя в конфиг!"
+    step "Добавление пользователя через API (без перезагрузки сервиса)..."
+    
+    if api_add_user "$username" "$secret_random"; then
+        success "Пользователь добавлен через API"
+        
+        if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
+            api_set_user_limit "$username" "1"
+            info "Для пользователя $username установлено ограничение: 1 IP"
+        fi
+        
+        users_count=$(get_users_count)
+        if [[ $users_count -gt 1 ]] && grep -q "^temp_user = " $TELEMT_CONFIG; then
+            sed -i "/^temp_user = /d" $TELEMT_CONFIG
+            sed -i "/^temp_user = [0-9]/d" $TELEMT_CONFIG
+            fix_config_permissions
+            graceful_reload
+        fi
+    else
+        error "Не удалось добавить пользователя через API"
         pause
         return
     fi
-
-    if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
-        if ! grep -q "^\[access.user_max_unique_ips\]" $TELEMT_CONFIG; then
-            echo "" >> $TELEMT_CONFIG
-            echo "[access.user_max_unique_ips]" >> $TELEMT_CONFIG
-        fi
-        sed -i "/^$username = [0-9]/d" $TELEMT_CONFIG
-        echo "$username = 1" >> $TELEMT_CONFIG
-        info "Для пользователя $username установлено ограничение: 1 IP"
-        fix_config_permissions
-    fi
-
-    users_count=$(get_users_count)
-    if [[ $users_count -gt 1 ]] && grep -q "^temp_user = " $TELEMT_CONFIG; then
-        sed -i "/^temp_user = /d" $TELEMT_CONFIG
-        sed -i "/^temp_user = [0-9]/d" $TELEMT_CONFIG
-        fix_config_permissions
-    fi
-
-    systemctl restart telemt
-    sleep 2
 
     server_ip=$(get_server_ip)
 
@@ -618,6 +643,9 @@ add_user() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}${BOLD}ПОЛЬЗОВАТЕЛЬ ДОБАВЛЕН!${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}✅ Пользователь добавлен БЕЗ перезагрузки сервиса${NC}"
+    echo -e "${GREEN}✅ Существующие подключения не прерваны${NC}"
+    echo ""
     echo -e "${YELLOW}Имя:${NC} $username"
     echo -e "${YELLOW}Секрет (32 hex):${NC} $secret_random"
     echo ""
@@ -664,59 +692,21 @@ list_users() {
     echo -e "${CYAN}Режим secure (DD-mode):${NC} ${YELLOW}$current_secure${NC}"
     echo ""
 
-    users=$(get_users_list)
-
-    if [[ -z "$users" ]]; then
-        warn "Нет добавленных пользователей"
-        pause
-        return
+    if check_api_available 2>/dev/null; then
+        step "Получение списка пользователей через API..."
+        echo ""
+        curl -s "${TELEMT_API}/v1/users" | python3 -m json.tool 2>/dev/null || curl -s "${TELEMT_API}/v1/users"
+        echo ""
+    else
+        users=$(get_users_list)
+        if [[ -z "$users" ]]; then
+            warn "Нет добавленных пользователей"
+            pause
+            return
+        fi
+        echo -e "${CYAN}Пользователи из конфига:${NC}"
+        echo "$users"
     fi
-
-    declare -A ip_limits
-    while IFS='=' read -r user limit; do
-        user=$(echo "$user" | xargs)
-        limit=$(echo "$limit" | xargs)
-        if [[ -n "$user" && "$limit" =~ ^[0-9]+$ ]]; then
-            ip_limits["$user"]="$limit"
-        fi
-    done < <(sed -n '/^\[access.user_max_unique_ips\]/,/^\[/p' $TELEMT_CONFIG | grep -E '^[a-zA-Z0-9_-]+ = [0-9]+' 2>/dev/null || true)
-
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf "${CYAN}%-4s %-20s %-40s %-10s${NC}\n" "№" "ИМЯ" "СЕКРЕТ (32 hex)" "ЛИМИТ IP"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-
-    line_num=1
-    while IFS='=' read -r username secret_part; do
-        username=$(echo "$username" | xargs)
-        secret=$(echo "$secret_part" | xargs | tr -d '"')
-        if [[ -n "$username" && "$username" != "#"* ]]; then
-            limit="${ip_limits[$username]:-без лимита}"
-            if [[ "$limit" == "1" ]]; then
-                limit_display="${GREEN}1 IP${NC}"
-            else
-                limit_display="${YELLOW}$limit${NC}"
-            fi
-
-            sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000 | tr -d '\n')
-            ee_secret="ee${secret}${sni_hex}"
-            dd_secret="dd${secret}"
-            tg_link_ee="tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
-            tg_link_dd="tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
-            http_link_ee="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
-            http_link_dd="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
-
-            printf "%-4s %-20s %-40s ${limit_display}\n" "$line_num" "$username" "$secret"
-            echo -e "    ${GREEN}📱 DD TG ссылка:${NC} $tg_link_dd"
-            echo -e "    ${GREEN}🌐 DD HTTP ссылка:${NC} $http_link_dd"
-            echo -e "    ${BLUE}📱 EE TG ссылка:${NC} $tg_link_ee"
-            echo -e "    ${BLUE}🌐 EE HTTP ссылка:${NC} $http_link_ee"
-            echo ""
-            ((line_num++))
-        fi
-    done <<< "$users"
-
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    info "Всего пользователей: $((line_num - 1))"
 
     pause
 }
@@ -733,9 +723,15 @@ remove_user() {
         return
     fi
 
-    users=$(get_users_list)
+    if ! check_api_available; then
+        pause
+        return
+    fi
 
-    if [[ -z "$users" ]]; then
+    users_json=$(curl -s "${TELEMT_API}/v1/users")
+    users_list=$(echo "$users_json" | grep -oP '"username":"\K[^"]+')
+    
+    if [[ -z "$users_list" ]]; then
         warn "Нет добавленных пользователей"
         pause
         return
@@ -743,20 +739,14 @@ remove_user() {
 
     echo -e "${CYAN}Существующие пользователи:${NC}"
     echo "─────────────────────────────────────────────────────────────────────────────"
-    printf "${CYAN}%-4s %-20s %-40s${NC}\n" "№" "ИМЯ" "СЕКРЕТ (32 hex)"
-    echo "─────────────────────────────────────────────────────────────────────────────"
-
+    
     line_num=1
     declare -a usernames
-    while IFS='=' read -r username secret_part; do
-        username=$(echo "$username" | xargs)
-        secret=$(echo "$secret_part" | xargs | tr -d '"')
-        if [[ -n "$username" && "$username" != "#"* ]]; then
-            printf "%-4s %-20s %-40s\n" "$line_num" "$username" "$secret"
-            usernames[$line_num]=$username
-            ((line_num++))
-        fi
-    done <<< "$users"
+    while IFS= read -r username; do
+        printf "%-4s %-20s\n" "$line_num" "$username"
+        usernames[$line_num]=$username
+        ((line_num++))
+    done <<< "$users_list"
     echo "─────────────────────────────────────────────────────────────────────────────"
     echo ""
 
@@ -788,11 +778,15 @@ remove_user() {
         return
     fi
 
-    sed -i "/^$username_to_remove = /d" $TELEMT_CONFIG
-    sed -i "/^$username_to_remove = [0-9]/d" $TELEMT_CONFIG
-    fix_config_permissions
-    systemctl restart telemt
-    success "Пользователь $username_to_remove удален"
+    step "Удаление пользователя через API (без перезагрузки сервиса)..."
+    
+    if api_remove_user "$username_to_remove"; then
+        success "Пользователь $username_to_remove удален через API"
+        sed -i "/^$username_to_remove = [0-9]/d" $TELEMT_CONFIG
+        fix_config_permissions
+    else
+        error "Не удалось удалить пользователя через API"
+    fi
 
     pause
 }
@@ -826,17 +820,14 @@ change_sni() {
 
     step "Обновление конфигурации..."
     sed -i "s/tls_domain = \".*\"/tls_domain = \"$new_sni\"/" $TELEMT_CONFIG
-
-    ensure_at_least_one_user
     fix_config_permissions
 
-    step "Перезапуск сервиса..."
-    systemctl restart telemt
+    graceful_reload
 
     sleep 2
 
     if systemctl is-active --quiet telemt; then
-        success "SNI изменен на $new_sni"
+        success "SNI изменен на $new_sni (соединения не прерваны)"
     else
         error "Сервис не запустился. Проверьте логи: journalctl -u telemt -n 20"
     fi
@@ -870,15 +861,12 @@ change_port() {
 
     step "Обновление порта в конфигурации..."
     sed -i "s/port = [0-9]*/port = $new_port/" $TELEMT_CONFIG
-
-    ensure_at_least_one_user
     fix_config_permissions
 
-    step "Перезапуск сервиса..."
-    systemctl restart telemt
+    graceful_reload
 
     if systemctl is-active --quiet telemt; then
-        success "Порт изменен на $new_port"
+        success "Порт изменен на $new_port (соединения не прерваны)"
         echo ""
         warn "Если вы используете фаервол, не забудьте открыть порт $new_port:"
         echo "  ufw allow $new_port/tcp"
@@ -984,22 +972,13 @@ change_user_limit() {
             ;;
     esac
 
-    if ! grep -q "^\[access.user_max_unique_ips\]" $TELEMT_CONFIG; then
-        echo "" >> $TELEMT_CONFIG
-        echo "[access.user_max_unique_ips]" >> $TELEMT_CONFIG
-    fi
-
-    sed -i "/^$username = /d" $TELEMT_CONFIG
-
+    api_set_user_limit "$username" "$new_limit"
+    
     if [[ "$new_limit" != "0" ]]; then
-        sed -i "/^\[access.user_max_unique_ips\]/a $username = $new_limit" $TELEMT_CONFIG
         success "Для пользователя $username установлен лимит: $new_limit IP"
     else
         success "Для пользователя $username убран лимит"
     fi
-
-    fix_config_permissions
-    systemctl restart telemt
 
     pause
 }
@@ -1090,12 +1069,15 @@ import os
 import subprocess
 import logging
 import re
+import json
+import urllib.request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = "TOKEN_PLACEHOLDER"
 ADMIN_IDS = [ADMIN_ID_PLACEHOLDER]
 TELEMT_CONFIG = "/etc/telemt/config.toml"
+TELEMT_API = "http://127.0.0.1:9091"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1103,6 +1085,19 @@ user_inputs = {}
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
+
+def api_request(endpoint, method="GET", data=None):
+    url = f"{TELEMT_API}{endpoint}"
+    req = urllib.request.Request(url, method=method)
+    if data:
+        req.add_header('Content-Type', 'application/json')
+        req.data = json.dumps(data).encode()
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.loads(response.read().decode())
+    except Exception as e:
+        logger.error(f"API error: {e}")
+        return None
 
 def get_current_port():
     try:
@@ -1124,38 +1119,11 @@ def get_current_sni():
         pass
     return "www.google.com"
 
-def get_current_secure():
-    try:
-        with open(TELEMT_CONFIG, 'r') as f:
-            for line in f:
-                if 'secure =' in line and not line.startswith('#'):
-                    return line.split('=')[1].strip()
-    except:
-        pass
-    return "false"
-
 def get_users():
-    users = []
-    try:
-        in_users_section = False
-        with open(TELEMT_CONFIG, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('[access.users]'):
-                    in_users_section = True
-                    continue
-                if in_users_section and line.startswith('['):
-                    break
-                if in_users_section and '=' in line and not line.startswith('#'):
-                    parts = line.split('=', 1)
-                    if len(parts) == 2:
-                        username = parts[0].strip()
-                        secret = parts[1].strip().strip('"')
-                        if username and secret and re.match(r'^[a-f0-9]{32}$', secret):
-                            users.append({'name': username, 'secret': secret})
-    except Exception as e:
-        logger.error(f"Ошибка чтения пользователей: {e}")
-    return users
+    result = api_request("/v1/users")
+    if result and result.get("ok"):
+        return result.get("data", [])
+    return []
 
 def get_user_limit(username):
     try:
@@ -1175,145 +1143,27 @@ def get_user_limit(username):
                         limit = parts[1].strip()
                         if user == username and limit.isdigit():
                             return int(limit)
-    except Exception as e:
-        logger.error(f"Ошибка чтения лимита: {e}")
+    except:
+        pass
     return 0
 
-def set_user_limit(username, limit):
-    try:
-        with open(TELEMT_CONFIG, 'r') as f:
-            lines = f.readlines()
+def add_user_via_api(username, secret):
+    result = api_request("/v1/users", "POST", {"username": username, "secret": secret})
+    return result is not None and result.get("ok")
 
-        with open(TELEMT_CONFIG, 'w') as f:
-            in_limits = False
-            for line in lines:
-                if '[access.user_max_unique_ips]' in line:
-                    in_limits = True
-                    f.write(line)
-                    continue
-                if in_limits and line.startswith('['):
-                    in_limits = False
-
-                if in_limits and line.strip().startswith(f'{username} ='):
-                    continue
-                f.write(line)
-
-        if limit > 0:
-            with open(TELEMT_CONFIG, 'r') as f:
-                lines = f.readlines()
-
-            with open(TELEMT_CONFIG, 'w') as f:
-                for line in lines:
-                    f.write(line)
-                    if '[access.user_max_unique_ips]' in line:
-                        f.write(f'{username} = {limit}\n')
-
-        subprocess.run(['chown', 'telemt:telemt', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['chmod', '644', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['systemctl', 'restart', 'telemt'], capture_output=True)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка установки лимита: {e}")
-        return False
-
-def add_user_to_config(username, secret):
-    try:
-        if not re.match(r'^[a-zA-Z0-9_-]+$', username):
-            return False
-        existing_users = get_users()
-        for u in existing_users:
-            if u['name'] == username:
-                return False
-
-        with open(TELEMT_CONFIG, 'r') as f:
-            lines = f.readlines()
-
-        has_users_section = any('[access.users]' in line for line in lines)
-
-        with open(TELEMT_CONFIG, 'w') as f:
-            for line in lines:
-                f.write(line)
-                if '[access.users]' in line:
-                    f.write(f'{username} = "{secret}"\n')
-            if not has_users_section:
-                f.write('\n[access.users]\n')
-                f.write(f'{username} = "{secret}"\n')
-
-        subprocess.run(['chown', 'telemt:telemt', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['chmod', '644', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['systemctl', 'restart', 'telemt'], capture_output=True)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка добавления пользователя: {e}")
-        return False
-
-def remove_user_from_config(username):
-    try:
-        with open(TELEMT_CONFIG, 'r') as f:
-            lines = f.readlines()
-        with open(TELEMT_CONFIG, 'w') as f:
-            in_users_section = False
-            for line in lines:
-                if '[access.users]' in line:
-                    in_users_section = True
-                    f.write(line)
-                    continue
-                if in_users_section and line.startswith('['):
-                    in_users_section = False
-                if line.strip().startswith(f'{username} ='):
-                    continue
-                f.write(line)
-        subprocess.run(['chown', 'telemt:telemt', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['chmod', '644', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['systemctl', 'restart', 'telemt'], capture_output=True)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка удаления пользователя: {e}")
-        return False
-
-def change_sni_in_config(new_sni):
-    try:
-        with open(TELEMT_CONFIG, 'r') as f:
-            content = f.read()
-        content = re.sub(r'tls_domain = "[^"]*"', f'tls_domain = "{new_sni}"', content)
-        with open(TELEMT_CONFIG, 'w') as f:
-            f.write(content)
-        subprocess.run(['chown', 'telemt:telemt', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['chmod', '644', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['systemctl', 'restart', 'telemt'], capture_output=True)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка изменения SNI: {e}")
-        return False
-
-def change_port_in_config(new_port):
-    try:
-        with open(TELEMT_CONFIG, 'r') as f:
-            content = f.read()
-        content = re.sub(r'port = \d+', f'port = {new_port}', content)
-        with open(TELEMT_CONFIG, 'w') as f:
-            f.write(content)
-        subprocess.run(['chown', 'telemt:telemt', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['chmod', '644', TELEMT_CONFIG], capture_output=True)
-        subprocess.run(['systemctl', 'restart', 'telemt'], capture_output=True)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка изменения порта: {e}")
-        return False
-
-def generate_secret():
-    random_part = subprocess.run(['openssl', 'rand', '-hex', '16'], capture_output=True, text=True).stdout.strip()
-    sni = get_current_sni()
-    sni_hex = subprocess.run(['xxd', '-p'], input=sni, capture_output=True, text=True).stdout.strip().replace('\n', '')
-    return f"ee{random_part}{sni_hex}"
+def remove_user_via_api(username):
+    result = api_request(f"/v1/users/{username}", "DELETE")
+    return result is not None and result.get("ok")
 
 def get_server_ip():
-    result = subprocess.run(['curl', '-4', '-s', 'ifconfig.me'], capture_output=True, text=True)
-    ip = result.stdout.strip()
-    if not ip:
-        result = subprocess.run(['curl', '-4', '-s', 'icanhazip.com'], capture_output=True, text=True)
-        ip = result.stdout.strip()
-    return ip if ip else "IP_НЕ_ОПРЕДЕЛЕН"
+    try:
+        with urllib.request.urlopen('http://ifconfig.me', timeout=5) as response:
+            ip = response.read().decode().strip()
+            if ip:
+                return ip
+    except:
+        pass
+    return "IP_НЕ_ОПРЕДЕЛЕН"
 
 def get_server_info():
     status = subprocess.run(['systemctl', 'is-active', 'telemt'], capture_output=True, text=True).stdout.strip()
@@ -1323,7 +1173,6 @@ def get_server_info():
             f"🌐 *IP:* `{get_server_ip()}`\n"
             f"🔌 *Порт:* `{get_current_port()}`\n"
             f"🔒 *SNI:* `{get_current_sni()}`\n"
-            f"🔐 *Secure mode:* `{get_current_secure()}`\n"
             f"👥 *Пользователей:* {len(users)}")
 
 def get_main_keyboard():
@@ -1334,7 +1183,6 @@ def get_main_keyboard():
         [InlineKeyboardButton("❌ Удалить пользователя", callback_data="remove_user")],
         [InlineKeyboardButton("🔒 Сменить SNI", callback_data="change_sni")],
         [InlineKeyboardButton("🔌 Сменить порт", callback_data="change_port")],
-        [InlineKeyboardButton("🔢 Лимит IP для пользователя", callback_data="change_limit")],
         [InlineKeyboardButton("🔄 Перезапустить telemt", callback_data="restart")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -1373,23 +1221,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         current_sni = get_current_sni()
         current_port = get_current_port()
-        current_secure = get_current_secure()
         server_ip = get_server_ip()
         sni_hex = subprocess.run(['xxd', '-p'], input=current_sni, capture_output=True, text=True).stdout.strip().replace('\n', '')
 
         text = "👥 *Список пользователей:*\n\n"
         for i, user in enumerate(users, 1):
-            limit = get_user_limit(user['name'])
+            username = user.get('username', 'unknown')
+            limit = get_user_limit(username)
             limit_text = f" 🔒 лимит: {limit} IP" if limit > 0 else ""
 
-            ee_secret = f"ee{user['secret']}{sni_hex}"
-            dd_secret = f"dd{user['secret']}"
+            secret = user.get('secret', '')
+            ee_secret = f"ee{secret}{sni_hex}"
+            dd_secret = f"dd{secret}"
             tg_link_ee = f"tg://proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
             tg_link_dd = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
             http_link_ee = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
             http_link_dd = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
 
-            text += f"*{i}. {user['name']}*{limit_text}\n"
+            text += f"*{i}. {username}*{limit_text}\n"
             text += f"📱 DD TG: `{tg_link_dd}`\n"
             text += f"🌐 DD HTTP: `{http_link_dd}`\n"
             text += f"📱 EE TG: `{tg_link_ee}`\n"
@@ -1407,13 +1256,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not users:
             await query.edit_message_text("📭 Нет пользователей для удаления", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
             return
-        keyboard = [[InlineKeyboardButton(f"❌ {user['name']}", callback_data=f"remove_{user['name']}")] for user in users]
+        keyboard = [[InlineKeyboardButton(f"❌ {user['username']}", callback_data=f"remove_{user['username']}")] for user in users]
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
         await query.edit_message_text("Выберите пользователя для удаления:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("remove_"):
         username = data.replace("remove_", "")
-        if remove_user_from_config(username):
+        if remove_user_via_api(username):
             await query.edit_message_text(f"✅ Пользователь *{username}* удалён", parse_mode='Markdown')
         else:
             await query.edit_message_text("❌ Ошибка при удалении")
@@ -1426,33 +1275,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "change_port":
         user_inputs[user_id] = {'action': 'change_port'}
         await query.edit_message_text("Введите новый порт (1-65535):", reply_markup=get_cancel_keyboard())
-
-    elif data == "change_limit":
-        users = get_users()
-        if not users:
-            await query.edit_message_text("📭 Нет пользователей для изменения лимита", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
-            return
-
-        keyboard = []
-        for user in users:
-            current_limit = get_user_limit(user['name'])
-            limit_text = f" (текущий: {current_limit} IP)" if current_limit > 0 else " (без лимита)"
-            keyboard.append([InlineKeyboardButton(f"🔢 {user['name']}{limit_text}", callback_data=f"limit_{user['name']}")])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
-
-        await query.edit_message_text("Выберите пользователя для изменения лимита IP:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("limit_"):
-        username = data.replace("limit_", "")
-        user_inputs[user_id] = {'action': 'change_limit', 'username': username}
-        await query.edit_message_text(
-            f"Введите новый лимит IP для пользователя *{username}*\n"
-            f"0 - без лимита\n"
-            f"1 - только один IP одновременно\n"
-            f"любое другое число - максимальное количество уникальных IP",
-            parse_mode='Markdown',
-            reply_markup=get_cancel_keyboard()
-        )
 
     elif data == "restart":
         await query.edit_message_text("🔄 Перезапуск telemt...")
@@ -1486,20 +1308,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         existing_users = get_users()
         for u in existing_users:
-            if u['name'] == text:
+            if u.get('username') == text:
                 await update.message.reply_text(f"❌ Пользователь *{text}* уже существует!", parse_mode='Markdown')
                 await update.message.reply_text("🤖 *Telemt Bot*\n\n*Передай привеД ПОТАПу !!!*\n\nВыберите действие:", reply_markup=get_main_keyboard(), parse_mode='Markdown')
                 del user_inputs[user_id]
                 return
-        secret = generate_secret()
-        random_part = secret[2:34]
-        if add_user_to_config(text, random_part):
+        secret = subprocess.run(['openssl', 'rand', '-hex', '16'], capture_output=True, text=True).stdout.strip()
+        if add_user_via_api(text, secret):
             ip = get_server_ip()
             port = get_current_port()
             sni = get_current_sni()
             sni_hex = subprocess.run(['xxd', '-p'], input=sni, capture_output=True, text=True).stdout.strip().replace('\n', '')
-            ee_secret = f"ee{random_part}{sni_hex}"
-            dd_secret = f"dd{random_part}"
+            ee_secret = f"ee{secret}{sni_hex}"
+            dd_secret = f"dd{secret}"
             tg_link_ee = f"tg://proxy?server={ip}&port={port}&secret={ee_secret}"
             tg_link_dd = f"tg://proxy?server={ip}&port={port}&secret={dd_secret}"
             http_link_ee = f"https://t.me/proxy?server={ip}&port={port}&secret={ee_secret}"
@@ -1519,7 +1340,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f.write(content)
             subprocess.run(['chown', 'telemt:telemt', TELEMT_CONFIG], capture_output=True)
             subprocess.run(['chmod', '644', TELEMT_CONFIG], capture_output=True)
-            subprocess.run(['systemctl', 'restart', 'telemt'], capture_output=True)
+            subprocess.run(['kill', '-HUP', subprocess.run(['pgrep', '-x', 'telemt'], capture_output=True, text=True).stdout.strip()], capture_output=True)
             await update.message.reply_text(f"✅ SNI изменён на `{text}`", parse_mode='Markdown')
         except Exception as e:
             await update.message.reply_text("❌ Ошибка при изменении SNI")
@@ -1538,35 +1359,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f.write(content)
             subprocess.run(['chown', 'telemt:telemt', TELEMT_CONFIG], capture_output=True)
             subprocess.run(['chmod', '644', TELEMT_CONFIG], capture_output=True)
-            subprocess.run(['systemctl', 'restart', 'telemt'], capture_output=True)
+            subprocess.run(['kill', '-HUP', subprocess.run(['pgrep', '-x', 'telemt'], capture_output=True, text=True).stdout.strip()], capture_output=True)
             await update.message.reply_text(f"✅ Порт изменён на `{text}`", parse_mode='Markdown')
         except Exception as e:
             await update.message.reply_text("❌ Ошибка при изменении порта")
-        await update.message.reply_text("🤖 *Telemt Bot*\n\n*Передай привеД ПОТАПу !!!*\n\nВыберите действие:", reply_markup=get_main_keyboard(), parse_mode='Markdown')
-        del user_inputs[user_id]
-
-    elif action == 'change_limit':
-        username = user_inputs[user_id].get('username')
-        if not username:
-            await update.message.reply_text("❌ Ошибка: пользователь не выбран")
-            await update.message.reply_text("🤖 *Telemt Bot*\n\n*Передай привеД ПОТАПу !!!*\n\nВыберите действие:", reply_markup=get_main_keyboard(), parse_mode='Markdown')
-            del user_inputs[user_id]
-            return
-
-        if not text.isdigit():
-            await update.message.reply_text("❌ Введите число (0 - без лимита, 1 - один IP, и т.д.)")
-            return
-
-        new_limit = int(text)
-
-        if set_user_limit(username, new_limit):
-            if new_limit == 0:
-                await update.message.reply_text(f"✅ Для пользователя *{username}* убран лимит IP", parse_mode='Markdown')
-            else:
-                await update.message.reply_text(f"✅ Для пользователя *{username}* установлен лимит: {new_limit} IP", parse_mode='Markdown')
-        else:
-            await update.message.reply_text("❌ Ошибка при установке лимита")
-
         await update.message.reply_text("🤖 *Telemt Bot*\n\n*Передай привеД ПОТАПу !!!*\n\nВыберите действие:", reply_markup=get_main_keyboard(), parse_mode='Markdown')
         del user_inputs[user_id]
 
@@ -1724,12 +1520,10 @@ install_telemt_panel() {
     read -p "Выберите [1-2]: " cert_type
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    # Установка зависимостей для сборки
     step "Установка зависимостей для сборки..."
     apt update -qq
     apt install -y golang-go git make npm nodejs
 
-    # Клонируем репозиторий и собираем панель с исправлением WebSocket
     step "Клонирование репозитория telemt_panel..."
     cd /tmp
     rm -rf telemt_panel
@@ -1746,12 +1540,9 @@ install_telemt_panel() {
     done
     cd ..
 
-    # ИСПРАВЛЕНИЕ WEBSOCKET
     step "Исправление CheckOrigin в коде..."
-    # Исправляем ws/handler.go
     sed -i '/CheckOrigin:/,/^[[:space:]]*},/c\
         CheckOrigin: func(r *http.Request) bool { return true; },' internal/ws/handler.go
-    # Исправляем logs/handler.go
     sed -i 's/CheckOrigin: checkOrigin,/CheckOrigin: func(r *http.Request) bool { return true; },/' internal/logs/handler.go
 
     step "Сборка бинарника..."
@@ -1867,7 +1658,6 @@ EOF
         sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
     fi
 
-    # Проверяем и перезапускаем Nginx
     nginx -t
     systemctl restart nginx
 
@@ -1899,7 +1689,6 @@ EOF
     systemctl enable telemt-panel
     systemctl start telemt-panel
 
-    # Дополнительный перезапуск Nginx для гарантии
     sleep 2
     systemctl restart nginx
 
@@ -2112,6 +1901,12 @@ show_status() {
     echo -e "${YELLOW}Метрики Prometheus:${NC} http://127.0.0.1:9091/metrics"
     echo -e "${YELLOW}API:${NC} http://127.0.0.1:9091/v1/users"
 
+    if check_api_available 2>/dev/null; then
+        echo -e "${GREEN}● API статус: ДОСТУПЕН${NC}"
+    else
+        echo -e "${RED}● API статус: НЕ ДОСТУПЕН${NC}"
+    fi
+
     echo ""
     echo -e "${BLUE}Последние логи telemt:${NC}"
     journalctl -u telemt -n 3 --no-pager 2>/dev/null || echo "  (логи недоступны)"
@@ -2140,15 +1935,16 @@ show_menu() {
     echo -e "${CYAN}${BOLD}║${NC}                         ${MAGENTA}TELEMT${NC}                                 ${CYAN}${BOLD}║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo -e "          ${YELLOW}Передай привеД ПОТАПу !!!${NC}"
+    echo -e "          ${GREEN}✨ API режим: операции без перезагрузки ✨${NC}"
     echo ""
     echo -e "${GREEN}  УСТАНОВКА И УДАЛЕНИЕ${NC}"
     echo -e "  ${GREEN}1)${NC} Установить telemt"
     echo -e "  ${RED}2)${NC} Удалить telemt (полностью)"
     echo ""
-    echo -e "${YELLOW}  УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ${NC}"
-    echo -e "  ${YELLOW}3)${NC} Добавить пользователя"
+    echo -e "${YELLOW}  УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (БЕЗ ПЕРЕЗАГРУЗКИ)${NC}"
+    echo -e "  ${YELLOW}3)${NC} Добавить пользователя ✨"
     echo -e "  ${YELLOW}4)${NC} Список пользователей"
-    echo -e "  ${YELLOW}5)${NC} Удалить пользователя"
+    echo -e "  ${YELLOW}5)${NC} Удалить пользователя ✨"
     echo ""
     echo -e "${BLUE}  НАСТРОЙКА${NC}"
     echo -e "  ${BLUE}6)${NC} Сменить SNI (TLS маскировку)"
