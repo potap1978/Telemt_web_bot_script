@@ -144,7 +144,40 @@ ensure_at_least_one_user() {
 }
 
 # ============================================
-# Функции установки и удаления telemt
+# Функция установки/обновления Rust (ИСПРАВЛЕНО)
+# ============================================
+install_rust() {
+    step "Установка Rust через rustup (актуальная версия)..."
+    
+    # Удаляем старую версию из apt, если есть
+    apt remove -y cargo rustc 2>/dev/null
+    
+    # Проверяем, установлен ли уже rustup
+    if command -v rustup &>/dev/null; then
+        info "Rust уже установлен, обновляем..."
+        rustup update stable
+    else
+        # Устанавливаем rustup
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source "$HOME/.cargo/env"
+        echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+    fi
+    
+    # Проверяем установку
+    if command -v cargo &>/dev/null; then
+        local rust_version=$(rustc --version 2>/dev/null)
+        local cargo_version=$(cargo --version 2>/dev/null)
+        success "Rust установлен: $rust_version"
+        info "Cargo: $cargo_version"
+        return 0
+    else
+        error "Не удалось установить Rust"
+        return 1
+    fi
+}
+
+# ============================================
+# Функции установки и удаления telemt (ИСПРАВЛЕНО)
 # ============================================
 install_telemt() {
     clear
@@ -178,24 +211,15 @@ install_telemt() {
     elif command -v pacman &>/dev/null; then
         pacman -S --noconfirm curl git base-devel openssl xxd
     else
-        warn "Не удалось определить пакетный менеджер. Установите вручную: curl, git, rust/cargo, xxd"
+        warn "Не удалось определить пакетный менеджер. Установите вручную: curl, git, build-essential, libssl-dev, xxd"
     fi
 
-    step "Установка Rust (неинтерактивно)..."
-    if ! command -v cargo &>/dev/null; then
-        info "Скачивание rustup..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
-        info "Установка Rust (это может занять несколько минут)..."
-        echo ""
-        sh /tmp/rustup.sh -y --verbose 2>&1 | while read line; do
-            echo -e "    ${CYAN}rustup:${NC} $line"
-        done
-        source "$HOME/.cargo/env"
-        rm -f /tmp/rustup.sh
-        echo ""
-        success "Rust установлен: $(rustc --version 2>/dev/null)"
-    else
-        info "Rust уже установлен: $(rustc --version 2>/dev/null)"
+    # Установка Rust через rustup (ИСПРАВЛЕНО)
+    install_rust
+    if [[ $? -ne 0 ]]; then
+        error "Не удалось установить Rust. Установка прервана."
+        pause
+        return
     fi
 
     step "Клонирование и сборка telemt..."
@@ -208,6 +232,12 @@ install_telemt() {
     cargo build --release 2>&1 | while read line; do
         echo -e "    ${CYAN}cargo:${NC} $line"
     done
+
+    if [[ ! -f "target/release/telemt" ]]; then
+        error "Ошибка сборки telemt"
+        pause
+        return
+    fi
 
     step "Создание пользователя и директорий..."
     id -u $TELEMT_USER &>/dev/null || useradd -r -s /bin/false -d $DATA_DIR $TELEMT_USER
@@ -346,7 +376,7 @@ uninstall_telemt() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ TELEMT
+# ОБНОВЛЕНИЕ TELEMT (ИСПРАВЛЕНО)
 # ============================================
 update_telemt() {
     clear
@@ -359,6 +389,20 @@ update_telemt() {
         error "Telemt не установлен. Сначала установите (пункт 1)"
         pause
         return
+    fi
+
+    # Проверяем и обновляем Rust перед обновлением (ИСПРАВЛЕНО)
+    if ! command -v cargo &>/dev/null; then
+        warn "Rust не найден. Устанавливаем..."
+        install_rust
+    else
+        cargo_version=$(cargo --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
+        if [[ -n "$cargo_version" ]] && [[ "$(echo "$cargo_version" | cut -d. -f1)" -lt 1 || "$(echo "$cargo_version" | cut -d. -f2)" -lt 80 ]]; then
+            warn "Версия Cargo $cargo_version устарела. Обновляем Rust..."
+            install_rust
+        else
+            info "Rust актуален: $(cargo --version)"
+        fi
     fi
 
     step "Получение текущей версии..."
@@ -446,9 +490,22 @@ update_telemt() {
 
     systemctl stop telemt
     git checkout "$TARGET_VERSION" 2>/dev/null
+    
+    # Очистка перед сборкой
+    cargo clean 2>/dev/null
+    
+    # Сборка
     cargo build --release 2>&1 | while read line; do
         echo -e "    ${CYAN}cargo:${NC} $line"
     done
+    
+    if [[ ! -f "target/release/telemt" ]]; then
+        error "Ошибка сборки telemt!"
+        systemctl start telemt
+        pause
+        return
+    fi
+    
     cp target/release/telemt /usr/local/bin/telemt
     chmod +x /usr/local/bin/telemt
     chown telemt:telemt /usr/local/bin/telemt
@@ -1593,7 +1650,7 @@ uninstall_bot() {
 }
 
 # ============================================
-# Функции для Web панели Telemt Panel (С ИСПРАВЛЕНИЕМ WEBSOCKET)
+# Функции для Web панели Telemt Panel
 # ============================================
 install_telemt_panel() {
     clear
