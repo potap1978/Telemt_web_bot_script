@@ -144,7 +144,7 @@ ensure_at_least_one_user() {
 }
 
 # ============================================
-# Функция установки Rust
+# Функция установки/обновления Rust
 # ============================================
 install_rust() {
     step "Установка Rust через rustup (актуальная версия)..."
@@ -502,7 +502,7 @@ update_telemt() {
 }
 
 # ============================================
-# УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (ИСПРАВЛЕНО - ЧЕРЕЗ API)
+# УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ
 # ============================================
 add_user() {
     clear
@@ -551,10 +551,8 @@ add_user() {
     ee_secret="ee${secret_random}${sni_hex}"
     dd_secret="dd${secret_random}"
 
-    # ========== ИСПРАВЛЕНИЕ: ДОБАВЛЕНИЕ ЧЕРЕЗ API (БЕЗ ПЕРЕЗАГРУЗКИ) ==========
     step "Добавление пользователя через API (без перезагрузки сервиса)..."
     
-    # Добавляем через API
     curl -s -X POST "http://127.0.0.1:9091/v1/users" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"$username\",\"secret\":\"$secret_random\"}" >/dev/null 2>&1
@@ -562,27 +560,17 @@ add_user() {
     if [[ $? -eq 0 ]]; then
         success "Пользователь добавлен через API"
         
-        # Обновляем конфиг для совместимости
-        if ! grep -q "^\[access.users\]" $TELEMT_CONFIG; then
-            echo "" >> $TELEMT_CONFIG
-            echo "[access.users]" >> $TELEMT_CONFIG
-        fi
-        sed -i "/^\[access.users\]/a $username = \"$secret_random\"" $TELEMT_CONFIG
-        fix_config_permissions
-        
-        # Устанавливаем лимит IP если нужно
         if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
             if ! grep -q "^\[access.user_max_unique_ips\]" $TELEMT_CONFIG; then
                 echo "" >> $TELEMT_CONFIG
                 echo "[access.user_max_unique_ips]" >> $TELEMT_CONFIG
             fi
             sed -i "/^$username = [0-9]/d" $TELEMT_CONFIG
-            echo "$username = 1" >> $TELEMT_CONFIG
+            sed -i "/^\[access.user_max_unique_ips\]/a $username = 1" $TELEMT_CONFIG
             info "Для пользователя $username установлено ограничение: 1 IP"
             fix_config_permissions
         fi
         
-        # Отправляем HUP сигнал для graceful перезагрузки (без разрыва соединений)
         if pgrep -x "telemt" > /dev/null; then
             kill -HUP $(pgrep -x "telemt") 2>/dev/null
             info "Конфигурация обновлена (соединения не прерваны)"
@@ -592,14 +580,12 @@ add_user() {
         pause
         return
     fi
-    # ====================================================================
 
     users_count=$(get_users_count)
     if [[ $users_count -gt 1 ]] && grep -q "^temp_user = " $TELEMT_CONFIG; then
         sed -i "/^temp_user = /d" $TELEMT_CONFIG
         sed -i "/^temp_user = [0-9]/d" $TELEMT_CONFIG
         fix_config_permissions
-        # Обновляем конфиг в памяти
         if pgrep -x "telemt" > /dev/null; then
             kill -HUP $(pgrep -x "telemt") 2>/dev/null
         fi
@@ -784,7 +770,6 @@ remove_user() {
         return
     fi
 
-    # ========== ИСПРАВЛЕНИЕ: УДАЛЕНИЕ ЧЕРЕЗ API (БЕЗ ПЕРЕЗАГРУЗКИ) ==========
     step "Удаление пользователя через API (без перезагрузки сервиса)..."
     
     curl -s -X DELETE "http://127.0.0.1:9091/v1/users/${username_to_remove}" >/dev/null 2>&1
@@ -794,13 +779,11 @@ remove_user() {
     else
         warn "API удаление не удалось, удаляем из конфига"
     fi
-    # ====================================================================
 
     sed -i "/^$username_to_remove = /d" $TELEMT_CONFIG
     sed -i "/^$username_to_remove = [0-9]/d" $TELEMT_CONFIG
     fix_config_permissions
     
-    # Обновляем конфиг в памяти без перезапуска
     if pgrep -x "telemt" > /dev/null; then
         kill -HUP $(pgrep -x "telemt") 2>/dev/null
         info "Конфигурация обновлена (соединения не прерваны)"
@@ -844,8 +827,6 @@ change_sni() {
     ensure_at_least_one_user
     fix_config_permissions
 
-    # Graceful reload вместо перезапуска
-    step "Обновление конфигурации в памяти (без разрыва соединений)..."
     if pgrep -x "telemt" > /dev/null; then
         kill -HUP $(pgrep -x "telemt") 2>/dev/null
         success "Конфигурация обновлена"
@@ -894,8 +875,6 @@ change_port() {
     ensure_at_least_one_user
     fix_config_permissions
 
-    # Graceful reload вместо перезапуска
-    step "Обновление конфигурации в памяти (без разрыва соединений)..."
     if pgrep -x "telemt" > /dev/null; then
         kill -HUP $(pgrep -x "telemt") 2>/dev/null
         success "Конфигурация обновлена"
@@ -1015,7 +994,7 @@ change_user_limit() {
         echo "[access.user_max_unique_ips]" >> $TELEMT_CONFIG
     fi
 
-    sed -i "/^$username = /d" $TELEMT_CONFIG
+    sed -i "/^$username = [0-9]/d" $TELEMT_CONFIG
 
     if [[ "$new_limit" != "0" ]]; then
         sed -i "/^\[access.user_max_unique_ips\]/a $username = $new_limit" $TELEMT_CONFIG
@@ -1026,7 +1005,6 @@ change_user_limit() {
 
     fix_config_permissions
     
-    # Обновляем конфиг в памяти без перезапуска
     if pgrep -x "telemt" > /dev/null; then
         kill -HUP $(pgrep -x "telemt") 2>/dev/null
         info "Конфигурация обновлена (соединения не прерваны)"
@@ -1760,7 +1738,7 @@ install_telemt_panel() {
     apt update -qq
     apt install -y golang-go git make npm nodejs
 
-    # Клонируем репозиторий и собираем панель
+    # Клонируем репозиторий и собираем панель с исправлением WebSocket
     step "Клонирование репозитория telemt_panel..."
     cd /tmp
     rm -rf telemt_panel
@@ -1896,7 +1874,6 @@ EOF
         sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
     fi
 
-    # Проверяем и перезапускаем Nginx
     nginx -t
     systemctl restart nginx
 
