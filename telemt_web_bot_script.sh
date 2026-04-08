@@ -2124,13 +2124,13 @@ show_status() {
     if systemctl is-active --quiet telemt-bot 2>/dev/null; then
         echo ""
         echo -e "${BLUE}Последние логи бота:${NC}"
-        journalctl -u telemt-bot -n 3 --no-pager 2>/dev/null || echo "  (логи недоступны)"
+        journalctl -u telemt-bot -n 10 --no-pager 2>/dev/null || echo "  (логи недоступны)"
     fi
 
     if systemctl is-active --quiet telemt-panel 2>/dev/null; then
         echo ""
         echo -e "${BLUE}Последние логи панели:${NC}"
-        journalctl -u telemt-panel -n 3 --no-pager 2>/dev/null || echo "  (логи недоступны)"
+        journalctl -u telemt-panel -n 10 --no-pager 2>/dev/null || echo "  (логи недоступны)"
     fi
 
     pause
