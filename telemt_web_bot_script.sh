@@ -2179,7 +2179,7 @@ show_menu() {
 #    echo -e "${CYAN}${BOLD}║${NC}                         ${MAGENTA}TELEMT${NC}                                 ${CYAN}${BOLD}║${NC}"
 #    echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                   ${MAGENTA}TELEMT${NC}                                  ${CYAN}${BOLD}║${NC}"
+    echo -e "${CYAN}${BOLD}║                   ${MAGENTA}TELEMT${NC}                             ${CYAN}${BOLD}║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo -e "          ${YELLOW}Передай привеД ПОТАПу !!!${NC}"
     echo -e "          ${GREEN}✨ API режим ✨${NC}"
