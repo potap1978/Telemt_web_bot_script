@@ -2119,7 +2119,7 @@ show_status() {
 
     echo ""
     echo -e "${BLUE}Последние логи telemt:${NC}"
-    journalctl -u telemt -n 3 --no-pager 2>/dev/null || echo "  (логи недоступны)"
+    journalctl -u telemt -n 10 --no-pager 2>/dev/null || echo "  (логи недоступны)"
 
     if systemctl is-active --quiet telemt-bot 2>/dev/null; then
         echo ""
