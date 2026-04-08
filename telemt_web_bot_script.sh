@@ -551,7 +551,7 @@ add_user() {
     ee_secret="ee${secret_random}${sni_hex}"
     dd_secret="dd${secret_random}"
 
-    step "Добавление пользователя через API (без перезагрузки сервиса)..."
+    step "Добавление пользователя через API "
 
     curl -s -X POST "http://127.0.0.1:9091/v1/users" \
         -H "Content-Type: application/json" \
@@ -597,7 +597,7 @@ add_user() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}${BOLD}ПОЛЬЗОВАТЕЛЬ ДОБАВЛЕН!${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}✅ Пользователь добавлен БЕЗ перезагрузки сервиса${NC}"
+    echo -e "${GREEN}✅ Пользователь добавлен${NC}"
     echo -e "${GREEN}✅ Существующие подключения не прерваны${NC}"
     echo ""
     echo -e "${YELLOW}Имя:${NC} $username"
@@ -770,7 +770,7 @@ remove_user() {
         return
     fi
 
-    step "Удаление пользователя через API (без перезагрузки сервиса)..."
+    step "Удаление пользователя через API"
 
     curl -s -X DELETE "http://127.0.0.1:9091/v1/users/${username_to_remove}" >/dev/null 2>&1
 
@@ -2179,13 +2179,13 @@ show_menu() {
     echo -e "${CYAN}${BOLD}║${NC}                         ${MAGENTA}TELEMT${NC}                                 ${CYAN}${BOLD}║${NC}"
     echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo -e "          ${YELLOW}Передай привеД ПОТАПу !!!${NC}"
-    echo -e "          ${GREEN}✨ API режим: операции без перезагрузки ✨${NC}"
+    echo -e "          ${GREEN}✨ API режим ✨${NC}"
     echo ""
     echo -e "${GREEN}  УСТАНОВКА И УДАЛЕНИЕ${NC}"
     echo -e "  ${GREEN}1)${NC} Установить telemt"
     echo -e "  ${RED}2)${NC} Удалить telemt (полностью)"
     echo ""
-    echo -e "${YELLOW}  УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (БЕЗ ПЕРЕЗАГРУЗКИ)${NC}"
+    echo -e "${YELLOW}  УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ  ${NC}"
     echo -e "  ${YELLOW}3)${NC} Добавить пользователя ✨"
     echo -e "  ${YELLOW}4)${NC} Список пользователей"
     echo -e "  ${YELLOW}5)${NC} Удалить пользователя ✨"
