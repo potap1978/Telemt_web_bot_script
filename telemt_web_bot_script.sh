@@ -148,9 +148,9 @@ ensure_at_least_one_user() {
 # ============================================
 install_rust() {
     step "Установка Rust через rustup (актуальная версия)..."
-    
+
     apt remove -y cargo rustc 2>/dev/null
-    
+
     if command -v rustup &>/dev/null; then
         info "Rust уже установлен, обновляем..."
         rustup update stable
@@ -159,7 +159,7 @@ install_rust() {
         source "$HOME/.cargo/env"
         echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
     fi
-    
+
     if command -v cargo &>/dev/null; then
         success "Rust установлен: $(rustc --version 2>/dev/null)"
         return 0
@@ -467,19 +467,19 @@ update_telemt() {
 
     systemctl stop telemt
     git checkout "$TARGET_VERSION" 2>/dev/null
-    
+
     cargo clean 2>/dev/null
     cargo build --release 2>&1 | while read line; do
         echo -e "    ${CYAN}cargo:${NC} $line"
     done
-    
+
     if [[ ! -f "target/release/telemt" ]]; then
         error "Ошибка сборки telemt!"
         systemctl start telemt
         pause
         return
     fi
-    
+
     cp target/release/telemt /usr/local/bin/telemt
     chmod +x /usr/local/bin/telemt
     chown telemt:telemt /usr/local/bin/telemt
@@ -552,14 +552,14 @@ add_user() {
     dd_secret="dd${secret_random}"
 
     step "Добавление пользователя через API (без перезагрузки сервиса)..."
-    
+
     curl -s -X POST "http://127.0.0.1:9091/v1/users" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"$username\",\"secret\":\"$secret_random\"}" >/dev/null 2>&1
-    
+
     if [[ $? -eq 0 ]]; then
         success "Пользователь добавлен через API"
-        
+
         if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
             if ! grep -q "^\[access.user_max_unique_ips\]" $TELEMT_CONFIG; then
                 echo "" >> $TELEMT_CONFIG
@@ -570,7 +570,7 @@ add_user() {
             info "Для пользователя $username установлено ограничение: 1 IP"
             fix_config_permissions
         fi
-        
+
         if pgrep -x "telemt" > /dev/null; then
             kill -HUP $(pgrep -x "telemt") 2>/dev/null
             info "Конфигурация обновлена (соединения не прерваны)"
@@ -612,12 +612,12 @@ add_user() {
     echo -e "${BLUE}tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
     echo -e "${BLUE}🌐 HTTP ссылка EE-mode:${NC}"
     echo -e "${BLUE}https://t.me/proxy?server=$server_ip&port=$current_port&secret=$ee_secret${NC}"
-    
+
     if [[ "$limit_ip" == "y" || "$limit_ip" == "Y" ]]; then
         echo ""
         echo -e "${YELLOW}⚠️  Ограничение:${NC} ${GREEN}1 IP одновременно${NC}"
     fi
-    
+
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     pause
@@ -771,9 +771,9 @@ remove_user() {
     fi
 
     step "Удаление пользователя через API (без перезагрузки сервиса)..."
-    
+
     curl -s -X DELETE "http://127.0.0.1:9091/v1/users/${username_to_remove}" >/dev/null 2>&1
-    
+
     if [[ $? -eq 0 ]]; then
         success "Пользователь удален через API"
     else
@@ -783,12 +783,12 @@ remove_user() {
     sed -i "/^$username_to_remove = /d" $TELEMT_CONFIG
     sed -i "/^$username_to_remove = [0-9]/d" $TELEMT_CONFIG
     fix_config_permissions
-    
+
     if pgrep -x "telemt" > /dev/null; then
         kill -HUP $(pgrep -x "telemt") 2>/dev/null
         info "Конфигурация обновлена (соединения не прерваны)"
     fi
-    
+
     success "Пользователь $username_to_remove удален"
 
     pause
@@ -1004,7 +1004,7 @@ change_user_limit() {
     fi
 
     fix_config_permissions
-    
+
     if pgrep -x "telemt" > /dev/null; then
         kill -HUP $(pgrep -x "telemt") 2>/dev/null
         info "Конфигурация обновлена (соединения не прерваны)"
@@ -1014,7 +1014,7 @@ change_user_limit() {
 }
 
 # ============================================
-# Управление Telegram ботом
+# Управление Telegram ботом (С ИСПРАВЛЕНИЕМ - ИЕРАРХИЧЕСКИЙ ВЫВОД)
 # ============================================
 install_bot() {
     clear
@@ -1351,6 +1351,9 @@ def get_main_keyboard():
 def get_cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel_input")]])
 
+def get_back_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад к списку пользователей", callback_data="list_users")]])
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Доступ запрещён.")
@@ -1380,32 +1383,63 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("📭 Нет добавленных пользователей", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
             return
 
+        # Показываем только список пользователей (без ссылок)
+        keyboard = []
+        for user in users:
+            limit = get_user_limit(user['name'])
+            limit_text = f" 🔒{limit}" if limit > 0 else ""
+            keyboard.append([InlineKeyboardButton(f"👤 {user['name']}{limit_text}", callback_data=f"user_{user['name']}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
+
+        await query.edit_message_text(
+            "👥 *Список пользователей*\n\nВыберите пользователя для просмотра ссылок:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("user_"):
+        username = data.replace("user_", "")
+        users = get_users()
+        user_data = None
+        for u in users:
+            if u['name'] == username:
+                user_data = u
+                break
+        
+        if not user_data:
+            await query.edit_message_text("❌ Пользователь не найден", reply_markup=get_back_keyboard())
+            return
+
         current_sni = get_current_sni()
         current_port = get_current_port()
-        current_secure = get_current_secure()
         server_ip = get_server_ip()
         sni_hex = subprocess.run(['xxd', '-p'], input=current_sni, capture_output=True, text=True).stdout.strip().replace('\n', '')
+        limit = get_user_limit(username)
+        limit_text = f"\n🔒 *Лимит IP:* {limit}" if limit > 0 else ""
 
-        text = "👥 *Список пользователей:*\n\n"
-        for i, user in enumerate(users, 1):
-            limit = get_user_limit(user['name'])
-            limit_text = f" 🔒 лимит: {limit} IP" if limit > 0 else ""
+        ee_secret = f"ee{user_data['secret']}{sni_hex}"
+        dd_secret = f"dd{user_data['secret']}"
+        tg_link_ee = f"tg://proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
+        tg_link_dd = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
+        http_link_ee = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
+        http_link_dd = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
 
-            ee_secret = f"ee{user['secret']}{sni_hex}"
-            dd_secret = f"dd{user['secret']}"
-            tg_link_ee = f"tg://proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
-            tg_link_dd = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
-            http_link_ee = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
-            http_link_dd = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
+        text = (
+            f"👤 *Пользователь:* `{username}`{limit_text}\n\n"
+            f"📱 *DD TG ссылка:*\n`{tg_link_dd}`\n\n"
+            f"🌐 *DD HTTP ссылка:*\n`{http_link_dd}`\n\n"
+            f"📱 *EE TG ссылка:*\n`{tg_link_ee}`\n\n"
+            f"🌐 *EE HTTP ссылка:*\n`{http_link_ee}`"
+        )
 
-            text += f"*{i}. {user['name']}*{limit_text}\n"
-            text += f"📱 DD TG: `{tg_link_dd}`\n"
-            text += f"🌐 DD HTTP: `{http_link_dd}`\n"
-            text += f"📱 EE TG: `{tg_link_ee}`\n"
-            text += f"🌐 EE HTTP: `{http_link_ee}`\n"
-            text += "\n"
-
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
+        await query.edit_message_text(
+            text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад к списку пользователей", callback_data="list_users")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+            ])
+        )
 
     elif data == "add_user":
         user_inputs[user_id] = {'action': 'add_user'}
