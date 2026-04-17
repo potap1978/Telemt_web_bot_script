@@ -144,6 +144,48 @@ ensure_at_least_one_user() {
 }
 
 # ============================================
+# ПРОВЕРКА ПОРТА (незаметная)
+# ============================================
+check_port_available() {
+    local port=$1
+    local bin_name=$2
+    
+    if [[ -z "$port" ]]; then
+        return 0
+    fi
+    
+    local port_info=""
+    if command -v ss >/dev/null 2>&1; then
+        port_info=$(ss -tulnp 2>/dev/null | grep -E ":${port}([[:space:]]|$)" || true)
+    elif command -v netstat >/dev/null 2>&1; then
+        port_info=$(netstat -tulnp 2>/dev/null | grep -E ":${port}([[:space:]]|$)" || true)
+    elif command -v lsof >/dev/null 2>&1; then
+        port_info=$(lsof -i :${port} 2>/dev/null | grep LISTEN || true)
+    else
+        return 0
+    fi
+    
+    if [[ -z "$port_info" ]]; then
+        return 0
+    fi
+    
+    if echo "$port_info" | grep -q "$bin_name"; then
+        return 0
+    fi
+    
+    warn "Порт $port уже занят другим процессом!"
+    echo "  $port_info"
+    echo ""
+    read -p "Использовать другой порт? (y/N): " change_port
+    if [[ "$change_port" == "y" || "$change_port" == "Y" ]]; then
+        return 1
+    else
+        error "Освободите порт $port и попробуйте снова"
+        exit 1
+    fi
+}
+
+# ============================================
 # Функция установки/обновления Rust
 # ============================================
 install_rust() {
@@ -869,6 +911,24 @@ change_port() {
         return
     fi
 
+    step "Проверка доступности порта $new_port..."
+    check_port_available "$new_port" "telemt"
+    if [[ $? -eq 1 ]]; then
+        read -p "Введите другой порт: " new_port
+        if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [[ $new_port -lt 1 ]] || [[ $new_port -gt 65535 ]]; then
+            error "Неверный порт"
+            pause
+            return
+        fi
+        step "Проверка порта $new_port..."
+        check_port_available "$new_port" "telemt" || {
+            error "Порт $new_port занят. Установка отменена"
+            pause
+            return
+        }
+    fi
+    info "Порт $new_port свободен"
+
     step "Обновление порта в конфигурации..."
     sed -i "s/port = [0-9]*/port = $new_port/" $TELEMT_CONFIG
 
@@ -1014,7 +1074,7 @@ change_user_limit() {
 }
 
 # ============================================
-# Управление Telegram ботом (С ИСПРАВЛЕНИЕМ - ИЕРАРХИЧЕСКИЙ ВЫВОД)
+# Управление Telegram ботом
 # ============================================
 install_bot() {
     clear
@@ -1383,7 +1443,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("📭 Нет добавленных пользователей", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
             return
 
-        # Показываем только список пользователей (без ссылок)
         keyboard = []
         for user in users:
             limit = get_user_limit(user['name'])
