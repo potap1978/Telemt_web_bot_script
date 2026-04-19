@@ -144,7 +144,7 @@ ensure_at_least_one_user() {
 }
 
 # ============================================
-# ПРОВЕРКА ПОРТА (незаметная)
+# ПРОВЕРКА ПОРТА
 # ============================================
 check_port_available() {
     local port=$1
@@ -183,6 +183,49 @@ check_port_available() {
         error "Освободите порт $port и попробуйте снова"
         exit 1
     fi
+}
+
+# ============================================
+# СБОРКА TELEMT (с выбором оптимизации)
+# ============================================
+build_telemt() {
+    local version=$1
+    local optimize=$2
+    
+    cd /tmp
+    rm -rf telemt
+    git clone https://github.com/telemt/telemt.git
+    cd telemt
+    
+    if [[ -n "$version" ]] && [[ "$version" != "latest" ]]; then
+        git checkout "$version"
+    fi
+    
+    step "Компиляция telemt (это может занять 5-15 минут)..."
+    
+    if [[ "$optimize" == "thin" ]]; then
+        info "Используется оптимизация lto = \"thin\" (рекомендуется для серверов с 1-2 GB RAM)"
+        CARGO_PROFILE_RELEASE_LTO="thin" cargo build --release 2>&1 | while read line; do
+            echo -e "    ${CYAN}cargo:${NC} $line"
+        done
+    elif [[ "$optimize" == "off" ]]; then
+        info "Используется оптимизация lto = \"off\" (для очень слабых серверов)"
+        CARGO_PROFILE_RELEASE_LTO="off" RUSTFLAGS="-C codegen-units=256" cargo build --release 2>&1 | while read line; do
+            echo -e "    ${CYAN}cargo:${NC} $line"
+        done
+    else
+        info "Используется стандартная оптимизация lto = \"fat\" (требует больше RAM, рекомендуется для 4+ GB)"
+        cargo build --release 2>&1 | while read line; do
+            echo -e "    ${CYAN}cargo:${NC} $line"
+        done
+    fi
+    
+    if [[ ! -f "target/release/telemt" ]]; then
+        error "Ошибка сборки telemt!"
+        return 1
+    fi
+    
+    return 0
 }
 
 # ============================================
@@ -256,16 +299,28 @@ install_telemt() {
         return
     fi
 
-    step "Клонирование и сборка telemt..."
-    cd /tmp
-    rm -rf telemt
-    git clone https://github.com/telemt/telemt.git
-    cd telemt
+    # Выбор уровня оптимизации
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}ВЫБОР УРОВНЯ ОПТИМИЗАЦИИ СБОРКИ:${NC}"
+    echo "  1) Стандартная (lto = \"fat\") — требует больше RAM (рекомендуется для 4+ GB)"
+    echo "  2) Облегчённая (lto = \"thin\") — меньше RAM (рекомендуется для 1-2 GB)"
+    echo "  3) Минимальная (lto = \"off\") — для очень слабых серверов (512 MB)"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -p "Выберите [1-3]: " opt_choice
+    
+    case $opt_choice in
+        2) OPTIMIZE="thin" ;;
+        3) OPTIMIZE="off" ;;
+        *) OPTIMIZE="fat" ;;
+    esac
 
-    step "Компиляция telemt (это может занять 5-10 минут)..."
-    cargo build --release 2>&1 | while read line; do
-        echo -e "    ${CYAN}cargo:${NC} $line"
-    done
+    build_telemt "latest" "$OPTIMIZE"
+    if [[ $? -ne 0 ]]; then
+        error "Сборка не удалась"
+        pause
+        return
+    fi
 
     step "Создание пользователя и директорий..."
     id -u $TELEMT_USER &>/dev/null || useradd -r -s /bin/false -d $DATA_DIR $TELEMT_USER
@@ -508,15 +563,26 @@ update_telemt() {
     step "Обновление telemt до $VERSION_TYPE версии $TARGET_VERSION..."
 
     systemctl stop telemt
-    git checkout "$TARGET_VERSION" 2>/dev/null
+    
+    # Выбор уровня оптимизации
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}ВЫБОР УРОВНЯ ОПТИМИЗАЦИИ СБОРКИ:${NC}"
+    echo "  1) Стандартная (lto = \"fat\") — требует больше RAM"
+    echo "  2) Облегчённая (lto = \"thin\") — меньше RAM (рекомендуется для 1-2 GB)"
+    echo "  3) Минимальная (lto = \"off\") — для очень слабых серверов"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -p "Выберите [1-3]: " opt_choice
+    
+    case $opt_choice in
+        2) OPTIMIZE="thin" ;;
+        3) OPTIMIZE="off" ;;
+        *) OPTIMIZE="fat" ;;
+    esac
 
-    cargo clean 2>/dev/null
-    cargo build --release 2>&1 | while read line; do
-        echo -e "    ${CYAN}cargo:${NC} $line"
-    done
-
-    if [[ ! -f "target/release/telemt" ]]; then
-        error "Ошибка сборки telemt!"
+    build_telemt "$TARGET_VERSION" "$OPTIMIZE"
+    if [[ $? -ne 0 ]]; then
+        error "Сборка не удалась"
         systemctl start telemt
         pause
         return
