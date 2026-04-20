@@ -2215,6 +2215,77 @@ change_panel_credentials() {
 }
 
 # ============================================
+# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (С ИСПРАВЛЕНИЕМ WEBSOCKET) - НОВЫЙ ПУНКТ 16
+# ============================================
+update_telemt_panel() {
+    clear
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}${BOLD}           ОБНОВЛЕНИЕ WEB ПАНЕЛИ TELEMT${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    if ! check_panel_installed; then
+        error "Web панель не установлена. Сначала установите (пункт 12)"
+        pause
+        return
+    fi
+
+    step "Остановка панели..."
+    systemctl stop telemt-panel
+
+    step "Клонирование свежего репозитория..."
+    cd /tmp
+    rm -rf telemt_panel
+    git clone https://github.com/amirotin/telemt_panel.git
+    cd telemt_panel
+
+    step "Установка зависимостей фронтенда и сборка..."
+    cd frontend
+    npm install 2>&1 | while read line; do
+        echo -e "    ${CYAN}npm:${NC} $line"
+    done
+    npm run build 2>&1 | while read line; do
+        echo -e "    ${CYAN}npm build:${NC} $line"
+    done
+    cd ..
+
+    # ИСПРАВЛЕНИЕ WEBSOCKET
+    step "Применение исправления WebSocket..."
+    sed -i '/CheckOrigin:/,/^[[:space:]]*},/c\
+        CheckOrigin: func(r *http.Request) bool { return true; },' internal/ws/handler.go
+    sed -i 's/CheckOrigin: checkOrigin,/CheckOrigin: func(r *http.Request) bool { return true; },/' internal/logs/handler.go
+
+    step "Сборка бинарника..."
+    go mod download 2>&1 | while read line; do
+        echo -e "    ${CYAN}go mod:${NC} $line"
+    done
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o telemt-panel . 2>&1 | while read line; do
+        echo -e "    ${CYAN}go build:${NC} $line"
+    done
+
+    step "Замена бинарника..."
+    cp telemt-panel /opt/bin/telemt/telemt-panel
+    chmod +x /opt/bin/telemt/telemt-panel
+    chown telemt:telemt /opt/bin/telemt/telemt-panel 2>/dev/null || true
+
+    step "Запуск панели..."
+    systemctl start telemt-panel
+
+    sleep 3
+
+    if systemctl is-active --quiet telemt-panel; then
+        success "Web панель успешно обновлена!"
+        echo ""
+        echo -e "${GREEN}✅ WebSocket исправление применено${NC}"
+        echo -e "${GREEN}✅ Панель работает на последней версии кода${NC}"
+    else
+        error "Что-то пошло не так. Проверьте логи: journalctl -u telemt-panel -n 20"
+    fi
+
+    pause
+}
+
+# ============================================
 # Статус и информация
 # ============================================
 show_status() {
@@ -2332,6 +2403,7 @@ show_menu() {
     echo -e "  ${MAGENTA}12)${NC} Установить Web панель Telemt"
     echo -e "  ${RED}13)${NC} Удалить Web панель Telemt"
     echo -e "  ${CYAN}14)${NC} Сменить логин/пароль Web панели"
+    echo -e "  ${GREEN}16)${NC} Обновить Web панель (с исправлением WebSocket)"
     echo ""
     echo -e "${GREEN}  ОБНОВЛЕНИЕ${NC}"
     echo -e "  ${GREEN}15)${NC} Проверить обновления telemt"
@@ -2366,13 +2438,14 @@ main() {
             13) uninstall_telemt_panel ;;
             14) change_panel_credentials ;;
             15) update_telemt ;;
+            16) update_telemt_panel ;;
             0) 
                 clear
                 info "До свидания!"
                 exit 0
                 ;;
             *) 
-                error "Неверный выбор. Пожалуйста, выберите от 0 до 15"
+                error "Неверный выбор. Пожалуйста, выберите от 0 до 16"
                 sleep 2
                 ;;
         esac
