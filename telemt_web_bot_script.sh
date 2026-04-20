@@ -1894,7 +1894,7 @@ uninstall_bot() {
 }
 
 # ============================================
-# Функции для Web панели Telemt Panel
+# Функции для Web панели Telemt Panel (БЕЗОПАСНАЯ)
 # ============================================
 install_telemt_panel() {
     clear
@@ -1936,6 +1936,7 @@ install_telemt_panel() {
         panel_port="3333"
     fi
 
+    # Проверка, не занят ли порт
     if ss -tlnp | grep -q ":$panel_port "; then
         warn "Порт $panel_port уже занят!"
         read -p "Использовать другой порт? (y/N): " change_port_choice
@@ -1946,6 +1947,26 @@ install_telemt_panel() {
                 pause
                 return
             fi
+        fi
+    fi
+
+    # Проверка конфликта с существующими сайтами Nginx
+    if grep -r "listen.*$panel_port" /etc/nginx/sites-enabled/ 2>/dev/null | grep -v "telemt-panel" | grep -q .; then
+        error "Порт $panel_port уже используется другим сайтом в Nginx!"
+        echo "Конфликтующий конфиг:"
+        grep -r "listen.*$panel_port" /etc/nginx/sites-enabled/ | grep -v "telemt-panel"
+        read -p "Использовать другой порт? (y/N): " change_port_nginx
+        if [[ "$change_port_nginx" == "y" || "$change_port_nginx" == "Y" ]]; then
+            read -p "Введите новый порт: " panel_port
+            if ! [[ "$panel_port" =~ ^[0-9]+$ ]] || [[ $panel_port -lt 1024 ]] || [[ $panel_port -gt 65535 ]]; then
+                error "Неверный порт. Установка отменена"
+                pause
+                return
+            fi
+        else
+            error "Установка отменена"
+            pause
+            return
         fi
     fi
 
@@ -2102,8 +2123,10 @@ server {
 }
 EOF
 
+    # Создаём симлинк (не трогаем другие сайты)
     ln -sf $PANEL_NGINX_CONF $PANEL_NGINX_ENABLED
-    rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+
+    # НЕ удаляем default и другие конфиги!
 
     if ! grep -q "sites-enabled" /etc/nginx/nginx.conf; then
         sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
@@ -2196,6 +2219,7 @@ uninstall_telemt_panel() {
     echo "  • Telemt (основной прокси) — ОСТАНЕТСЯ"
     echo "  • Telegram бот — ОСТАНЕТСЯ"
     echo "  • Созданные пользователи прокси — ОСТАНУТСЯ"
+    echo "  • Другие сайты Nginx — ОСТАНУТСЯ"
     echo ""
     read -p "Вы уверены, что хотите удалить ТОЛЬКО Web панель? (y/N): " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
@@ -2214,6 +2238,7 @@ uninstall_telemt_panel() {
     rm -rf /opt/bin/telemt
     rm -rf /opt/etc/telemt-panel
     rm -rf /var/lib/telemt-panel
+    rm -f $PANEL_VERSION_FILE
 
     step "Удаление конфигурации Nginx для панели..."
     rm -f $PANEL_NGINX_CONF
@@ -2223,10 +2248,7 @@ uninstall_telemt_panel() {
     rm -f /etc/nginx/ssl/telemt-panel.crt
     rm -f /etc/nginx/ssl/telemt-panel.key
 
-    step "Восстановление стандартной конфигурации Nginx..."
-    if [[ -f /etc/nginx/sites-available/default ]] && [[ ! -f /etc/nginx/sites-enabled/default ]]; then
-        ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default 2>/dev/null
-    fi
+    # НЕ восстанавливаем default и другие конфиги!
 
     step "Перезапуск Nginx..."
     systemctl restart nginx 2>/dev/null
@@ -2234,7 +2256,7 @@ uninstall_telemt_panel() {
     step "Обновление systemd..."
     systemctl daemon-reload
 
-    success "Web панель Telemt полностью удалена! Telemt и Telegram бот остались без изменений."
+    success "Web панель Telemt полностью удалена! Telemt, Telegram бот и другие сайты остались без изменений."
     pause
 }
 
@@ -2295,7 +2317,7 @@ change_panel_credentials() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (С ПРАВИЛЬНЫМ ОПРЕДЕЛЕНИЕМ ВЕРСИИ)
+# ОБНОВЛЕНИЕ WEB ПАНЕЛИ
 # ============================================
 update_telemt_panel() {
     clear
