@@ -40,6 +40,7 @@ PANEL_NGINX_CONF="/etc/nginx/sites-available/telemt-panel"
 PANEL_NGINX_ENABLED="/etc/nginx/sites-enabled/telemt-panel"
 PANEL_SSL_KEY="/etc/ssl/private/telemt-panel.key"
 PANEL_SSL_CRT="/etc/ssl/certs/telemt-panel.crt"
+PANEL_VERSION_FILE="/opt/etc/telemt-panel/version.info"
 
 # ============================================
 # Вспомогательные функции
@@ -183,6 +184,34 @@ check_port_available() {
         error "Освободите порт $port и попробуйте снова"
         exit 1
     fi
+}
+
+# ============================================
+# ПОЛУЧЕНИЕ ВЕРСИИ WEB ПАНЕЛИ
+# ============================================
+get_panel_version() {
+    if [[ -f "$PANEL_VERSION_FILE" ]]; then
+        source "$PANEL_VERSION_FILE"
+        echo "$PANEL_VERSION"
+    else
+        echo "не установлена"
+    fi
+}
+
+get_panel_build_date() {
+    if [[ -f "$PANEL_VERSION_FILE" ]]; then
+        source "$PANEL_VERSION_FILE"
+        echo "$PANEL_BUILD_DATE"
+    else
+        echo "неизвестно"
+    fi
+}
+
+save_panel_version() {
+    local version=$1
+    mkdir -p "$(dirname "$PANEL_VERSION_FILE")"
+    echo "PANEL_VERSION=$version" > "$PANEL_VERSION_FILE"
+    echo "PANEL_BUILD_DATE=$(date -Iseconds)" >> "$PANEL_VERSION_FILE"
 }
 
 # ============================================
@@ -731,6 +760,9 @@ add_user() {
     pause
 }
 
+# ============================================
+# СПИСОК ПОЛЬЗОВАТЕЛЕЙ (УЛУЧШЕННЫЙ)
+# ============================================
 list_users() {
     clear
     echo -e "${BLUE}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -762,6 +794,7 @@ list_users() {
         return
     fi
 
+    # Получаем лимиты IP
     declare -A ip_limits
     while IFS='=' read -r user limit; do
         user=$(echo "$user" | xargs)
@@ -771,42 +804,85 @@ list_users() {
         fi
     done < <(sed -n '/^\[access.user_max_unique_ips\]/,/^\[/p' $TELEMT_CONFIG | grep -E '^[a-zA-Z0-9_-]+ = [0-9]+' 2>/dev/null || true)
 
+    # Выводим список пользователей с номерами
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf "${CYAN}%-4s %-20s %-40s %-10s${NC}\n" "№" "ИМЯ" "СЕКРЕТ (32 hex)" "ЛИМИТ IP"
+    printf "${CYAN}%-4s %-20s %-10s${NC}\n" "№" "ИМЯ" "ЛИМИТ IP"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     line_num=1
+    declare -a usernames
+    declare -a user_secrets
     while IFS='=' read -r username secret_part; do
         username=$(echo "$username" | xargs)
         secret=$(echo "$secret_part" | xargs | tr -d '"')
         if [[ -n "$username" && "$username" != "#"* ]]; then
-            limit="${ip_limits[$username]:-без лимита}"
+            limit="${ip_limits[$username]:-0}"
             if [[ "$limit" == "1" ]]; then
                 limit_display="${GREEN}1 IP${NC}"
+            elif [[ "$limit" -gt 1 ]]; then
+                limit_display="${YELLOW}${limit} IP${NC}"
             else
-                limit_display="${YELLOW}$limit${NC}"
+                limit_display="${CYAN}без лимита${NC}"
             fi
-
-            sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000 | tr -d '\n')
-            ee_secret="ee${secret}${sni_hex}"
-            dd_secret="dd${secret}"
-            tg_link_ee="tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
-            tg_link_dd="tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
-            http_link_ee="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
-            http_link_dd="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
-
-            printf "%-4s %-20s %-40s ${limit_display}\n" "$line_num" "$username" "$secret"
-            echo -e "    ${GREEN}📱 DD TG ссылка:${NC} $tg_link_dd"
-            echo -e "    ${GREEN}🌐 DD HTTP ссылка:${NC} $http_link_dd"
-            echo -e "    ${BLUE}📱 EE TG ссылка:${NC} $tg_link_ee"
-            echo -e "    ${BLUE}🌐 EE HTTP ссылка:${NC} $http_link_ee"
-            echo ""
+            printf "%-4s %-20s %-10s\n" "$line_num" "$username" "$limit_display"
+            usernames[$line_num]=$username
+            user_secrets[$line_num]=$secret
             ((line_num++))
         fi
     done <<< "$users"
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    info "Всего пользователей: $((line_num - 1))"
+    echo -e "${GREEN}Всего пользователей: $((line_num - 1))${NC}"
+    echo ""
+
+    read -p "Введите номер пользователя для просмотра ссылок (или 0 для выхода): " user_num
+
+    if [[ "$user_num" == "0" ]]; then
+        return
+    fi
+
+    if ! [[ "$user_num" =~ ^[0-9]+$ ]] || [[ $user_num -lt 1 ]] || [[ $user_num -ge $line_num ]]; then
+        error "Неверный номер"
+        pause
+        return
+    fi
+
+    username="${usernames[$user_num]}"
+    secret="${user_secrets[$user_num]}"
+    limit="${ip_limits[$username]:-0}"
+
+    # Генерируем ссылки
+    sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000 | tr -d '\n')
+    ee_secret="ee${secret}${sni_hex}"
+    dd_secret="dd${secret}"
+    tg_link_ee="tg://proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
+    tg_link_dd="tg://proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
+    http_link_ee="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$ee_secret"
+    http_link_dd="https://t.me/proxy?server=$server_ip&port=$current_port&secret=$dd_secret"
+
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}${BOLD}ПОЛЬЗОВАТЕЛЬ: ${YELLOW}$username${NC}"
+    if [[ "$limit" == "1" ]]; then
+        echo -e "${GREEN}⚠️  Лимит IP: 1 (только одно подключение)${NC}"
+    elif [[ "$limit" -gt 1 ]]; then
+        echo -e "${YELLOW}⚠️  Лимит IP: $limit${NC}"
+    else
+        echo -e "${CYAN}⚠️  Лимит IP: без ограничений${NC}"
+    fi
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "${GREEN}📱 TG ссылка DD-mode (рекомендуется):${NC}"
+    echo -e "${GREEN}$tg_link_dd${NC}"
+    echo -e "${GREEN}🌐 HTTP ссылка DD-mode:${NC}"
+    echo -e "${GREEN}$http_link_dd${NC}"
+    echo ""
+    echo -e "${BLUE}📱 TG ссылка EE-mode (стандартная):${NC}"
+    echo -e "${BLUE}$tg_link_ee${NC}"
+    echo -e "${BLUE}🌐 HTTP ссылка EE-mode:${NC}"
+    echo -e "${BLUE}$http_link_ee${NC}"
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     pause
 }
@@ -2064,6 +2140,10 @@ EOF
     systemctl enable telemt-panel
     systemctl start telemt-panel
 
+    # Сохраняем версию панели
+    PANEL_VERSION=$(cd /tmp/telemt_panel && git describe --tags 2>/dev/null || echo "unknown")
+    save_panel_version "$PANEL_VERSION"
+
     sleep 2
     systemctl restart nginx
 
@@ -2215,7 +2295,7 @@ change_panel_credentials() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (С ИСПРАВЛЕНИЕМ WEBSOCKET) - НОВЫЙ ПУНКТ 16
+# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (С ПРОВЕРКОЙ ВЕРСИИ)
 # ============================================
 update_telemt_panel() {
     clear
@@ -2226,6 +2306,42 @@ update_telemt_panel() {
 
     if ! check_panel_installed; then
         error "Web панель не установлена. Сначала установите (пункт 12)"
+        pause
+        return
+    fi
+
+    step "Проверка текущей версии..."
+    CURRENT_VERSION=$(get_panel_version)
+    CURRENT_DATE=$(get_panel_build_date)
+    echo -e "${CYAN}Текущая версия:${NC} ${YELLOW}${CURRENT_VERSION:-не определена}${NC}"
+    echo -e "${CYAN}Дата сборки:${NC} ${YELLOW}${CURRENT_DATE:-неизвестно}${NC}"
+    echo ""
+
+    step "Проверка последней версии на GitHub..."
+    cd /tmp
+    rm -rf telemt_panel
+    git clone --depth 1 https://github.com/amirotin/telemt_panel.git 2>/dev/null
+    cd telemt_panel
+    
+    LATEST_VERSION=$(git describe --tags 2>/dev/null || echo "unknown")
+    LATEST_DATE=$(git log -1 --format=%cd --date=iso 2>/dev/null || echo "неизвестно")
+    
+    echo -e "${CYAN}Последняя версия на GitHub:${NC} ${YELLOW}$LATEST_VERSION${NC}"
+    echo -e "${CYAN}Дата последнего коммита:${NC} ${YELLOW}$LATEST_DATE${NC}"
+    echo ""
+
+    if [[ "$CURRENT_VERSION" == "$LATEST_VERSION" ]]; then
+        info "У вас уже установлена последняя версия!"
+        pause
+        return
+    fi
+
+    echo -e "${YELLOW}📦 Доступно обновление: $CURRENT_VERSION → $LATEST_VERSION${NC}"
+    echo ""
+    read -p "Обновить панель? (y/N): " confirm
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        info "Обновление отменено"
         pause
         return
     fi
@@ -2268,13 +2384,16 @@ update_telemt_panel() {
     chmod +x /opt/bin/telemt/telemt-panel
     chown telemt:telemt /opt/bin/telemt/telemt-panel 2>/dev/null || true
 
+    # Сохраняем новую версию
+    save_panel_version "$LATEST_VERSION"
+
     step "Запуск панели..."
     systemctl start telemt-panel
 
     sleep 3
 
     if systemctl is-active --quiet telemt-panel; then
-        success "Web панель успешно обновлена!"
+        success "Web панель успешно обновлена до версии $LATEST_VERSION!"
         echo ""
         echo -e "${GREEN}✅ WebSocket исправление применено${NC}"
         echo -e "${GREEN}✅ Панель работает на последней версии кода${NC}"
@@ -2317,6 +2436,11 @@ show_status() {
         server_ip=$(get_server_ip)
         panel_port=$(grep -oP "listen \K\d+" $PANEL_NGINX_CONF 2>/dev/null || echo "3333")
         echo -e "${GREEN}   Доступ: https://$server_ip:$panel_port${NC}"
+        
+        PANEL_VER=$(get_panel_version)
+        PANEL_DATE=$(get_panel_build_date)
+        echo -e "${CYAN}   Версия Web панели:${NC} ${PANEL_VER:-не определена}"
+        echo -e "${CYAN}   Дата сборки:${NC} ${PANEL_DATE:-неизвестно}"
     else
         echo -e "${RED}● Web панель: НЕ АКТИВЕН${NC}"
     fi
@@ -2403,7 +2527,7 @@ show_menu() {
     echo -e "  ${MAGENTA}12)${NC} Установить Web панель Telemt"
     echo -e "  ${RED}13)${NC} Удалить Web панель Telemt"
     echo -e "  ${CYAN}14)${NC} Сменить логин/пароль Web панели"
-    echo -e "  ${GREEN}16)${NC} Обновить Web панель (с исправлением WebSocket)"
+    echo -e "  ${GREEN}16)${NC} Обновить Web панель (с проверкой версии)"
     echo ""
     echo -e "${GREEN}  ОБНОВЛЕНИЕ${NC}"
     echo -e "  ${GREEN}15)${NC} Проверить обновления telemt"
