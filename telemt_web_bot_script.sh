@@ -818,13 +818,13 @@ list_users() {
         if [[ -n "$username" && "$username" != "#"* ]]; then
             limit="${ip_limits[$username]:-0}"
             if [[ "$limit" == "1" ]]; then
-                limit_display="${GREEN}1 IP${NC}"
+                    limit_display="${GREEN}1 IP${NC}"
             elif [[ "$limit" -gt 1 ]]; then
-                limit_display="${YELLOW}${limit} IP${NC}"
+                    limit_display="${YELLOW}${limit} IP${NC}"
             else
-                limit_display="${CYAN}без лимита${NC}"
+                    limit_display="${CYAN}без лимита${NC}"
             fi
-            printf "%-4s %-20s %-10s\n" "$line_num" "$username" "$limit_display"
+            echo -e "$(printf "%-4s %-20s " "$line_num" "$username")${limit_display}"
             usernames[$line_num]=$username
             user_secrets[$line_num]=$secret
             ((line_num++))
