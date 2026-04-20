@@ -2141,7 +2141,7 @@ EOF
     systemctl start telemt-panel
 
     # Сохраняем версию панели
-    PANEL_VERSION=$(cd /tmp/telemt_panel && git describe --tags 2>/dev/null || echo "unknown")
+    PANEL_VERSION=$(cd /tmp/telemt_panel && git describe --tags 2>/dev/null | sed 's/^v//' || echo "0.5.2")
     save_panel_version "$PANEL_VERSION"
 
     sleep 2
