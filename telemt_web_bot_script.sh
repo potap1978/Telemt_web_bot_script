@@ -761,7 +761,7 @@ add_user() {
 }
 
 # ============================================
-# СПИСОК ПОЛЬЗОВАТЕЛЕЙ (УЛУЧШЕННЫЙ)
+# СПИСОК ПОЛЬЗОВАТЕЛЕЙ
 # ============================================
 list_users() {
     clear
@@ -818,13 +818,13 @@ list_users() {
         if [[ -n "$username" && "$username" != "#"* ]]; then
             limit="${ip_limits[$username]:-0}"
             if [[ "$limit" == "1" ]]; then
-                    limit_display="${GREEN}1 IP${NC}"
+                limit_display="1 IP"
             elif [[ "$limit" -gt 1 ]]; then
-                    limit_display="${YELLOW}${limit} IP${NC}"
+                limit_display="${limit} IP"
             else
-                    limit_display="${CYAN}без лимита${NC}"
+                limit_display="без лимита"
             fi
-            echo -e "$(printf "%-4s %-20s " "$line_num" "$username")${limit_display}"
+            printf "%-4s %-20s %-10s\n" "$line_num" "$username" "$limit_display"
             usernames[$line_num]=$username
             user_secrets[$line_num]=$secret
             ((line_num++))
@@ -2295,7 +2295,7 @@ change_panel_credentials() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (С ПРОВЕРКОЙ ВЕРСИИ)
+# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (С ПРАВИЛЬНЫМ ОПРЕДЕЛЕНИЕМ ВЕРСИИ)
 # ============================================
 update_telemt_panel() {
     clear
@@ -2320,10 +2320,11 @@ update_telemt_panel() {
     step "Проверка последней версии на GitHub..."
     cd /tmp
     rm -rf telemt_panel
-    git clone --depth 1 https://github.com/amirotin/telemt_panel.git 2>/dev/null
+    git clone https://github.com/amirotin/telemt_panel.git
     cd telemt_panel
+    git fetch --tags
     
-    LATEST_VERSION=$(git describe --tags 2>/dev/null || echo "unknown")
+    LATEST_VERSION=$(git describe --tags 2>/dev/null | sed 's/^v//' || echo "unknown")
     LATEST_DATE=$(git log -1 --format=%cd --date=iso 2>/dev/null || echo "неизвестно")
     
     echo -e "${CYAN}Последняя версия на GitHub:${NC} ${YELLOW}$LATEST_VERSION${NC}"
@@ -2348,12 +2349,6 @@ update_telemt_panel() {
 
     step "Остановка панели..."
     systemctl stop telemt-panel
-
-    step "Клонирование свежего репозитория..."
-    cd /tmp
-    rm -rf telemt_panel
-    git clone https://github.com/amirotin/telemt_panel.git
-    cd telemt_panel
 
     step "Установка зависимостей фронтенда и сборка..."
     cd frontend
