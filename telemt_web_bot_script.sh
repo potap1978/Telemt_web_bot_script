@@ -1013,7 +1013,7 @@ change_sni() {
 
     if pgrep -x "telemt" > /dev/null; then
         kill -HUP $(pgrep -x "telemt") 2>/dev/null
-        success "Конфигурация обновлена"
+        success "Конфигурация обновлена (SNI применён без перезапуска)"
     else
         systemctl restart telemt
     fi
@@ -1042,7 +1042,7 @@ change_port() {
     fi
 
     current_port=$(grep -oP 'port = \K\d+' $TELEMT_CONFIG 2>/dev/null || echo "7443")
-    echo -e "Текущий порт: ${YELLOW}$current_port${NC}"
+    echo -e "${CYAN}Текущий порт:${NC} ${YELLOW}$current_port${NC}"
     echo ""
 
     read -p "Введите новый порт (1-65535, рекомендуется 443 или 8443): " new_port
@@ -1053,21 +1053,22 @@ change_port() {
         return
     fi
 
+    # Проверка, не занят ли порт
     step "Проверка доступности порта $new_port..."
-    check_port_available "$new_port" "telemt"
-    if [[ $? -eq 1 ]]; then
-        read -p "Введите другой порт: " new_port
+    if ss -tlnp | grep -q ":$new_port "; then
+        warn "Порт $new_port уже занят!"
+        read -p "Использовать другой порт? (y/N): " change_choice
+        if [[ "$change_choice" != "y" && "$change_choice" != "Y" ]]; then
+            info "Операция отменена"
+            pause
+            return
+        fi
+        read -p "Введите новый порт: " new_port
         if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [[ $new_port -lt 1 ]] || [[ $new_port -gt 65535 ]]; then
             error "Неверный порт"
             pause
             return
         fi
-        step "Проверка порта $new_port..."
-        check_port_available "$new_port" "telemt" || {
-            error "Порт $new_port занят. Установка отменена"
-            pause
-            return
-        }
     fi
     info "Порт $new_port свободен"
 
@@ -1077,12 +1078,11 @@ change_port() {
     ensure_at_least_one_user
     fix_config_permissions
 
-    if pgrep -x "telemt" > /dev/null; then
-        kill -HUP $(pgrep -x "telemt") 2>/dev/null
-        success "Конфигурация обновлена"
-    else
-        systemctl restart telemt
-    fi
+    # ПОЛНЫЙ ПЕРЕЗАПУСК (не HUP)
+    step "Перезапуск telemt для применения нового порта..."
+    systemctl restart telemt
+
+    sleep 2
 
     if systemctl is-active --quiet telemt; then
         success "Порт изменен на $new_port"
