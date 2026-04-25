@@ -488,7 +488,7 @@ uninstall_telemt() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ TELEMT
+# ОБНОВЛЕНИЕ TELEMT (ПУНКТ 16)
 # ============================================
 update_telemt() {
     clear
@@ -1032,7 +1032,7 @@ change_sni() {
 change_port() {
     clear
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}${BOLD}           СМЕНА ПОРТА${NC}"
+    echo -e "${CYAN}${BOLD}           СМENA ПОРТА${NC}"
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
@@ -2261,7 +2261,7 @@ uninstall_telemt_panel() {
 }
 
 # ============================================
-# СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ
+# СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ (ПУНКТ 14)
 # ============================================
 change_panel_credentials() {
     clear
@@ -2317,7 +2317,7 @@ change_panel_credentials() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ WEB ПАНЕЛИ
+# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (ПУНКТ 15)
 # ============================================
 update_telemt_panel() {
     clear
@@ -2508,7 +2508,7 @@ show_status() {
 }
 
 # ============================================
-# Главное меню
+# Главное меню (С ПРАВИЛЬНОЙ НУМЕРАЦИЕЙ)
 # ============================================
 show_menu() {
     clear
@@ -2544,10 +2544,10 @@ show_menu() {
     echo -e "  ${MAGENTA}12)${NC} Установить Web панель Telemt"
     echo -e "  ${RED}13)${NC} Удалить Web панель Telemt"
     echo -e "  ${CYAN}14)${NC} Сменить логин/пароль Web панели"
-    echo -e "  ${GREEN}16)${NC} Обновить Web панель (с проверкой версии)"
+    echo -e "  ${GREEN}15)${NC} Обновить Web панель (с проверкой версии)"
     echo ""
     echo -e "${GREEN}  ОБНОВЛЕНИЕ${NC}"
-    echo -e "  ${GREEN}15)${NC} Проверить обновления telemt"
+    echo -e "  ${GREEN}16)${NC} Проверить обновления telemt"
     echo ""
     echo -e "${RED}  0)${NC} Выход"
     echo ""
@@ -2578,8 +2578,8 @@ main() {
             12) install_telemt_panel ;;
             13) uninstall_telemt_panel ;;
             14) change_panel_credentials ;;
-            15) update_telemt ;;
-            16) update_telemt_panel ;;
+            15) update_telemt_panel ;;
+            16) update_telemt ;;
             0) 
                 clear
                 info "До свидания!"
