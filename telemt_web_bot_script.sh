@@ -215,6 +215,51 @@ save_panel_version() {
 }
 
 # ============================================
+# ПОКАЗ QR-КОДА ДЛЯ ПОЛЬЗОВАТЕЛЯ
+# ============================================
+show_qr_for_user() {
+    local username="$1"
+    local secret="$2"
+    local port="$3"
+    local sni="$4"
+    local mode="${5:-dd}"
+    
+    local server_ip=$(get_server_ip)
+    
+    if [[ "$mode" == "dd" ]]; then
+        local dd_secret="dd${secret}"
+        local link="tg://proxy?server=${server_ip}&port=${port}&secret=${dd_secret}"
+        local mode_name="DD-mode (рекомендуемый)"
+    else
+        local sni_hex=$(echo -n "$sni" | xxd -p -c 1000 | tr -d '\n')
+        local ee_secret="ee${secret}${sni_hex}"
+        local link="tg://proxy?server=${server_ip}&port=${port}&secret=${ee_secret}"
+        local mode_name="EE-mode (альтернативный)"
+    fi
+    
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}📱 QR-код для подключения (${mode_name})${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}Пользователь:${NC} $username"
+    echo -e "${CYAN}Режим:${NC} $mode_name"
+    echo ""
+    
+    if command -v qrencode &>/dev/null; then
+        qrencode -t ANSIUTF8 "$link"
+        echo ""
+        echo -e "${YELLOW}💡 Альтернативная ссылка:${NC}"
+        echo -e "${CYAN}$link${NC}"
+    else
+        error "qrencode не установлен!"
+        echo -e "${YELLOW}Установите: apt install qrencode${NC}"
+        echo -e "${YELLOW}Ссылка для подключения:${NC}"
+        echo -e "${CYAN}$link${NC}"
+    fi
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# ============================================
 # СБОРКА TELEMT (с выбором оптимизации)
 # ============================================
 build_telemt() {
@@ -312,13 +357,13 @@ install_telemt() {
 
     step "Установка системных зависимостей..."
     if command -v apt &>/dev/null; then
-        apt update -qq && apt install -y curl git build-essential pkg-config libssl-dev xxd python3 python3-pip
+        apt update -qq && apt install -y curl git build-essential pkg-config libssl-dev xxd python3 python3-pip qrencode
     elif command -v yum &>/dev/null; then
-        yum install -y curl git gcc make openssl-devel vim-common python3 python3-pip
+        yum install -y curl git gcc make openssl-devel vim-common python3 python3-pip qrencode
     elif command -v pacman &>/dev/null; then
-        pacman -S --noconfirm curl git base-devel openssl xxd python python-pip
+        pacman -S --noconfirm curl git base-devel openssl xxd python python-pip qrencode
     else
-        warn "Не удалось определить пакетный менеджер. Установите вручную: curl, git, build-essential, libssl-dev, xxd"
+        warn "Не удалось определить пакетный менеджер. Установите вручную: curl, git, build-essential, libssl-dev, xxd, qrencode"
     fi
 
     install_rust
@@ -761,7 +806,7 @@ add_user() {
 }
 
 # ============================================
-# СПИСОК ПОЛЬЗОВАТЕЛЕЙ
+# СПИСОК ПОЛЬЗОВАТЕЛЕЙ (С ДОБАВЛЕННЫМ QR)
 # ============================================
 list_users() {
     clear
@@ -884,9 +929,31 @@ list_users() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
+    # ===== НОВЫЙ БЛОК: QR-КОД =====
+    echo ""
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}📱 Хотите получить QR-код для быстрого подключения?${NC}"
+    read -p "Показать QR-код? (y/N): " show_qr
+    if [[ "$show_qr" == "y" || "$show_qr" == "Y" ]]; then
+        echo ""
+        echo -e "${YELLOW}Выберите тип ссылки для QR-кода:${NC}"
+        echo "  1) DD-mode (рекомендуется, лучше обходит блокировки)"
+        echo "  2) EE-mode (стандартный, совместимость)"
+        read -p "Выбор [1-2]: " qr_mode
+        
+        case $qr_mode in
+            2)
+                show_qr_for_user "$username" "$secret" "$current_port" "$current_sni" "ee"
+                ;;
+            *)
+                show_qr_for_user "$username" "$secret" "$current_port" "$current_sni" "dd"
+                ;;
+        esac
+    fi
+    # ===== КОНЕЦ НОВОГО БЛОКА =====
+
     pause
 }
-
 remove_user() {
     clear
     echo -e "${RED}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1032,7 +1099,7 @@ change_sni() {
 change_port() {
     clear
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}${BOLD}           СМENA ПОРТА${NC}"
+    echo -e "${CYAN}${BOLD}           СМЕНА ПОРТА${NC}"
     echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
@@ -1547,6 +1614,7 @@ def get_main_keyboard():
         [InlineKeyboardButton("🔌 Сменить порт", callback_data="change_port")],
         [InlineKeyboardButton("🔢 Лимит IP для пользователя", callback_data="change_limit")],
         [InlineKeyboardButton("🔄 Перезапустить telemt", callback_data="restart")],
+        [InlineKeyboardButton("📱 QR-код", callback_data="qr_menu")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -1633,13 +1701,76 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🌐 *EE HTTP ссылка:*\n`{http_link_ee}`"
         )
 
+        keyboard = [
+            [InlineKeyboardButton("📱 QR-код (DD-mode)", callback_data=f"qr_dd_{username}")],
+            [InlineKeyboardButton("📱 QR-код (EE-mode)", callback_data=f"qr_ee_{username}")],
+            [InlineKeyboardButton("🔙 Назад к списку пользователей", callback_data="list_users")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
+        ]
         await query.edit_message_text(
             text,
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Назад к списку пользователей", callback_data="list_users")],
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]
-            ])
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("qr_dd_"):
+        username = data.replace("qr_dd_", "")
+        users = get_users()
+        user_data = None
+        for u in users:
+            if u['name'] == username:
+                user_data = u
+                break
+        if user_data:
+            server_ip = get_server_ip()
+            current_port = get_current_port()
+            dd_secret = f"dd{user_data['secret']}"
+            link = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
+            qr_path = f"/tmp/qr_{username}_dd.png"
+            subprocess.run(['qrencode', '-o', qr_path, link], capture_output=True)
+            await query.message.reply_photo(photo=open(qr_path, 'rb'), caption=f"📱 QR-код для {username} (DD-mode)")
+            subprocess.run(['rm', '-f', qr_path], capture_output=True)
+        else:
+            await query.edit_message_text("❌ Пользователь не найден")
+
+    elif data.startswith("qr_ee_"):
+        username = data.replace("qr_ee_", "")
+        users = get_users()
+        user_data = None
+        for u in users:
+            if u['name'] == username:
+                user_data = u
+                break
+        if user_data:
+            server_ip = get_server_ip()
+            current_port = get_current_port()
+            current_sni = get_current_sni()
+            sni_hex = subprocess.run(['xxd', '-p'], input=current_sni, capture_output=True, text=True).stdout.strip().replace('\n', '')
+            ee_secret = f"ee{user_data['secret']}{sni_hex}"
+            link = f"tg://proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
+            qr_path = f"/tmp/qr_{username}_ee.png"
+            subprocess.run(['qrencode', '-o', qr_path, link], capture_output=True)
+            await query.message.reply_photo(photo=open(qr_path, 'rb'), caption=f"📱 QR-код для {username} (EE-mode)")
+            subprocess.run(['rm', '-f', qr_path], capture_output=True)
+        else:
+            await query.edit_message_text("❌ Пользователь не найден")
+
+    elif data == "qr_menu":
+        users = get_users()
+        if not users:
+            await query.edit_message_text("📭 Нет добавленных пользователей", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]))
+            return
+
+        keyboard = []
+        for user in users:
+            keyboard.append([InlineKeyboardButton(f"📱 {user['name']} (DD)", callback_data=f"qr_dd_{user['name']}")])
+            keyboard.append([InlineKeyboardButton(f"📱 {user['name']} (EE)", callback_data=f"qr_ee_{user['name']}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
+
+        await query.edit_message_text(
+            "📱 *Выберите пользователя и режим для QR-кода:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
     elif data == "add_user":
@@ -1894,7 +2025,7 @@ uninstall_bot() {
 }
 
 # ============================================
-# Функции для Web панели Telemt Panel (БЕЗОПАСНАЯ)
+# Функции для Web панели Telemt Panel
 # ============================================
 install_telemt_panel() {
     clear
@@ -2508,7 +2639,94 @@ show_status() {
 }
 
 # ============================================
-# Главное меню (С ПРАВИЛЬНОЙ НУМЕРАЦИЕЙ)
+# ОТДЕЛЬНОЕ МЕНЮ ДЛЯ QR-КОДОВ (ПУНКТ 17)
+# ============================================
+show_qr_menu() {
+    clear
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}${BOLD}           📱 QR-КОД ДЛЯ ПОДКЛЮЧЕНИЯ${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    if ! check_telemt_installed; then
+        pause
+        return
+    fi
+    
+    # Получаем текущие настройки
+    current_port=$(grep -oP 'port = \K\d+' $TELEMT_CONFIG 2>/dev/null || echo "7443")
+    current_sni=$(grep -oP 'tls_domain = "\K[^"]+' $TELEMT_CONFIG 2>/dev/null || echo "www.google.com")
+    
+    # Получаем список пользователей
+    users=$(get_users_list)
+    
+    if [[ -z "$users" ]]; then
+        warn "Нет добавленных пользователей"
+        pause
+        return
+    fi
+    
+    # Выводим список пользователей
+    echo -e "${CYAN}Выберите пользователя:${NC}"
+    echo "─────────────────────────────────────────────────────────────────────────────"
+    printf "${CYAN}%-4s %-20s %-40s${NC}\n" "№" "ИМЯ" "СЕКРЕТ"
+    echo "─────────────────────────────────────────────────────────────────────────────"
+    
+    line_num=1
+    declare -a usernames
+    declare -a user_secrets
+    while IFS='=' read -r username secret_part; do
+        username=$(echo "$username" | xargs)
+        secret=$(echo "$secret_part" | xargs | tr -d '"')
+        if [[ -n "$username" && "$username" != "#"* ]]; then
+            printf "%-4s %-20s %-40s\n" "$line_num" "$username" "$secret"
+            usernames[$line_num]=$username
+            user_secrets[$line_num]=$secret
+            ((line_num++))
+        fi
+    done <<< "$users"
+    echo "─────────────────────────────────────────────────────────────────────────────"
+    echo ""
+    
+    users_count=$((line_num - 1))
+    
+    if [[ $users_count -eq 0 ]]; then
+        warn "Нет пользователей"
+        pause
+        return
+    fi
+    
+    read -p "Введите номер пользователя (1-$users_count): " user_num
+    
+    if ! [[ "$user_num" =~ ^[0-9]+$ ]] || [[ $user_num -lt 1 ]] || [[ $user_num -ge $line_num ]]; then
+        error "Неверный номер"
+        pause
+        return
+    fi
+    
+    username="${usernames[$user_num]}"
+    secret="${user_secrets[$user_num]}"
+    
+    echo ""
+    echo -e "${YELLOW}Выберите тип ссылки:${NC}"
+    echo "  1) DD-mode (рекомендуется, лучше обходит блокировки)"
+    echo "  2) EE-mode (стандартный, совместимость)"
+    read -p "Выбор [1-2]: " qr_mode
+    
+    case $qr_mode in
+        2)
+            show_qr_for_user "$username" "$secret" "$current_port" "$current_sni" "ee"
+            ;;
+        *)
+            show_qr_for_user "$username" "$secret" "$current_port" "$current_sni" "dd"
+            ;;
+    esac
+    
+    pause
+}
+
+# ============================================
+# Главное меню
 # ============================================
 show_menu() {
     clear
@@ -2548,6 +2766,7 @@ show_menu() {
     echo ""
     echo -e "${GREEN}  ОБНОВЛЕНИЕ${NC}"
     echo -e "  ${GREEN}16)${NC} Проверить обновления telemt"
+    echo -e "  ${CYAN}17)${NC} 📱 Показать QR-код для пользователя"
     echo ""
     echo -e "${RED}  0)${NC} Выход"
     echo ""
@@ -2580,13 +2799,14 @@ main() {
             14) change_panel_credentials ;;
             15) update_telemt_panel ;;
             16) update_telemt ;;
+            17) show_qr_menu ;;
             0) 
                 clear
                 info "До свидания!"
                 exit 0
                 ;;
             *) 
-                error "Неверный выбор. Пожалуйста, выберите от 0 до 16"
+                error "Неверный выбор. Пожалуйста, выберите от 0 до 17"
                 sleep 2
                 ;;
         esac
