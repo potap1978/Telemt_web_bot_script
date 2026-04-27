@@ -533,7 +533,7 @@ uninstall_telemt() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ TELEMT (ПУНКТ 16)
+# ОБНОВЛЕНИЕ TELEMT (ПУНКТ 17)
 # ============================================
 update_telemt() {
     clear
@@ -806,7 +806,7 @@ add_user() {
 }
 
 # ============================================
-# СПИСОК ПОЛЬЗОВАТЕЛЕЙ (С ДОБАВЛЕННЫМ QR)
+# СПИСОК ПОЛЬЗОВАТЕЛЕЙ (С QR)
 # ============================================
 list_users() {
     clear
@@ -929,7 +929,7 @@ list_users() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    # ===== НОВЫЙ БЛОК: QR-КОД =====
+    # ===== QR-КОД =====
     echo ""
     echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}📱 Хотите получить QR-код для быстрого подключения?${NC}"
@@ -950,7 +950,7 @@ list_users() {
                 ;;
         esac
     fi
-    # ===== КОНЕЦ НОВОГО БЛОКА =====
+    # ===== КОНЕЦ БЛОКА QR =====
 
     pause
 }
@@ -1691,7 +1691,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg_link_ee = f"tg://proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
         tg_link_dd = f"tg://proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
         http_link_ee = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={ee_secret}"
-        http_link_dd = f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
+        http_link_dd =f"https://t.me/proxy?server={server_ip}&port={current_port}&secret={dd_secret}"
 
         text = (
             f"👤 *Пользователь:* `{username}`{limit_text}\n\n"
@@ -2392,7 +2392,7 @@ uninstall_telemt_panel() {
 }
 
 # ============================================
-# СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ (ПУНКТ 14)
+# СМЕНА ЛОГИНА/ПАРОЛЯ WEB ПАНЕЛИ (ПУНКТ 15)
 # ============================================
 change_panel_credentials() {
     clear
@@ -2448,7 +2448,7 @@ change_panel_credentials() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (ПУНКТ 15)
+# ОБНОВЛЕНИЕ WEB ПАНЕЛИ (ПУНКТ 16)
 # ============================================
 update_telemt_panel() {
     clear
@@ -2458,7 +2458,7 @@ update_telemt_panel() {
     echo ""
 
     if ! check_panel_installed; then
-        error "Web панель не установлена. Сначала установите (пункт 12)"
+        error "Web панель не установлена. Сначала установите (пункт 13)"
         pause
         return
     fi
@@ -2639,7 +2639,7 @@ show_status() {
 }
 
 # ============================================
-# ОТДЕЛЬНОЕ МЕНЮ ДЛЯ QR-КОДОВ (ПУНКТ 17)
+# ОТДЕЛЬНОЕ МЕНЮ ДЛЯ QR-КОДОВ (ПУНКТ 5)
 # ============================================
 show_qr_menu() {
     clear
@@ -2726,7 +2726,7 @@ show_qr_menu() {
 }
 
 # ============================================
-# Главное меню
+# Главное меню (QR под номером 5)
 # ============================================
 show_menu() {
     clear
@@ -2744,29 +2744,29 @@ show_menu() {
     echo -e "${YELLOW}  УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ  ${NC}"
     echo -e "  ${YELLOW}3)${NC} Добавить пользователя ✨"
     echo -e "  ${YELLOW}4)${NC} Список пользователей"
-    echo -e "  ${YELLOW}5)${NC} Удалить пользователя ✨"
+    echo -e "  ${CYAN}5)${NC} 📱 Показать QR-код для пользователя"
+    echo -e "  ${YELLOW}6)${NC} Удалить пользователя ✨"
     echo ""
     echo -e "${BLUE}  НАСТРОЙКА${NC}"
-    echo -e "  ${BLUE}6)${NC} Сменить SNI (TLS маскировку)"
-    echo -e "  ${BLUE}7)${NC} Сменить порт"
-    echo -e "  ${BLUE}8)${NC} Изменить лимит IP для пользователя"
+    echo -e "  ${BLUE}7)${NC} Сменить SNI (TLS маскировку)"
+    echo -e "  ${BLUE}8)${NC} Сменить порт"
+    echo -e "  ${BLUE}9)${NC} Изменить лимит IP для пользователя"
     echo ""
     echo -e "${CYAN}  ИНФОРМАЦИЯ${NC}"
-    echo -e "  ${CYAN}9)${NC} Статус и информация"
+    echo -e "  ${CYAN}10)${NC} Статус и информация"
     echo ""
     echo -e "${MAGENTA}  TELEGRAM БОТ${NC}"
-    echo -e "  ${MAGENTA}10)${NC} Установить Telegram бота"
-    echo -e "  ${RED}11)${NC} Удалить Telegram бота"
+    echo -e "  ${MAGENTA}11)${NC} Установить Telegram бота"
+    echo -e "  ${RED}12)${NC} Удалить Telegram бота"
     echo ""
     echo -e "${MAGENTA}  WEB ПАНЕЛЬ${NC}"
-    echo -e "  ${MAGENTA}12)${NC} Установить Web панель Telemt"
-    echo -e "  ${RED}13)${NC} Удалить Web панель Telemt"
-    echo -e "  ${CYAN}14)${NC} Сменить логин/пароль Web панели"
-    echo -e "  ${GREEN}15)${NC} Обновить Web панель (с проверкой версии)"
+    echo -e "  ${MAGENTA}13)${NC} Установить Web панель Telemt"
+    echo -e "  ${RED}14)${NC} Удалить Web панель Telemt"
+    echo -e "  ${CYAN}15)${NC} Сменить логин/пароль Web панели"
+    echo -e "  ${GREEN}16)${NC} Обновить Web панель (с проверкой версии)"
     echo ""
     echo -e "${GREEN}  ОБНОВЛЕНИЕ${NC}"
-    echo -e "  ${GREEN}16)${NC} Проверить обновления telemt"
-    echo -e "  ${CYAN}17)${NC} 📱 Показать QR-код для пользователя"
+    echo -e "  ${GREEN}17)${NC} Проверить обновления telemt"
     echo ""
     echo -e "${RED}  0)${NC} Выход"
     echo ""
@@ -2787,19 +2787,19 @@ main() {
             2) uninstall_telemt ;;
             3) add_user ;;
             4) list_users ;;
-            5) remove_user ;;
-            6) change_sni ;;
-            7) change_port ;;
-            8) change_user_limit ;;
-            9) show_status ;;
-            10) install_bot ;;
-            11) uninstall_bot ;;
-            12) install_telemt_panel ;;
-            13) uninstall_telemt_panel ;;
-            14) change_panel_credentials ;;
-            15) update_telemt_panel ;;
-            16) update_telemt ;;
-            17) show_qr_menu ;;
+            5) show_qr_menu ;;
+            6) remove_user ;;
+            7) change_sni ;;
+            8) change_port ;;
+            9) change_user_limit ;;
+            10) show_status ;;
+            11) install_bot ;;
+            12) uninstall_bot ;;
+            13) install_telemt_panel ;;
+            14) uninstall_telemt_panel ;;
+            15) change_panel_credentials ;;
+            16) update_telemt_panel ;;
+            17) update_telemt ;;
             0) 
                 clear
                 info "До свидания!"
