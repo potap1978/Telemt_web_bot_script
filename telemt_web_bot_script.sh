@@ -47,6 +47,11 @@ PANEL_SSL_CRT="/etc/nginx/ssl/telemt-panel.crt"
 PANEL_VERSION_FILE="/opt/etc/telemt-panel/version.info"
 GEOIP_DB_PATH="/opt/etc/telemt-panel/GeoLite2-City.mmdb"
 
+# Пути для сертификатов 3x-ui
+THREE_X_UI_CERT_DIR="/root/cert/ip"
+THREE_X_UI_CERT="$THREE_X_UI_CERT_DIR/fullchain.pem"
+THREE_X_UI_KEY="$THREE_X_UI_CERT_DIR/privkey.pem"
+
 # ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
@@ -103,16 +108,14 @@ generate_random_hex() {
 }
 
 # ============================================
-# НОВАЯ: РАБОТА СО СПИСКОМ SNI ДОМЕНОВ
+# РАБОТА СО СПИСКОМ SNI ДОМЕНОВ
 # ============================================
 get_tls_domains() {
-    # Пытаемся прочитать tls_domains (новый формат)
     local domains=$(grep -oP 'tls_domains\s*=\s*\[\K[^\]]+' "$TELEMT_CONFIG" 2>/dev/null | tr -d '"' | tr ',' '\n' | sed 's/^\s*//;s/\s*$//' | grep -v '^$')
     if [[ -n "$domains" ]]; then
         echo "$domains"
         return 0
     fi
-    # Fallback на старый tls_domain
     local old_domain=$(grep -oP 'tls_domain\s*=\s*"\K[^"]+' "$TELEMT_CONFIG" 2>/dev/null)
     if [[ -n "$old_domain" ]]; then
         echo "$old_domain"
@@ -134,11 +137,9 @@ set_tls_domains() {
     done
     domains_str="[$domains_str]"
     
-    # Удаляем старые записи
     sed -i '/^tls_domain\s*=/d' "$TELEMT_CONFIG"
     sed -i '/^tls_domains\s*=/d' "$TELEMT_CONFIG"
     
-    # Вставляем новую секцию после [censorship]
     if grep -q "^\[censorship\]" "$TELEMT_CONFIG"; then
         sed -i "/^\[censorship\]/a tls_domains = $domains_str" "$TELEMT_CONFIG"
     else
@@ -161,7 +162,6 @@ add_tls_domain() {
         current_domains+=("$d")
     done < <(get_tls_domains)
     
-    # Проверяем, нет ли уже такого
     for d in "${current_domains[@]}"; do
         if [[ "$d" == "$new_domain" ]]; then
             error "Домен $new_domain уже есть в списке"
@@ -191,22 +191,78 @@ remove_tls_domain() {
 }
 
 # ============================================
-# НОВАЯ: LET'S ENCRYPT НА IP (6 дней)
+# LET'S ENCRYPT НА IP (С ХУКАМИ)
 # ============================================
+setup_cert_hook() {
+    local server_ip="$1"
+    
+    step "Настройка автообновления сертификата через acme.sh..."
+    
+    mkdir -p /root/.acme.sh/hooks
+    cat > "/root/.acme.sh/hooks/ip-${server_ip}.sh" << HOOK_EOF
+#!/bin/bash
+# Хук для telemt-panel: копирует сертификат после обновления
+SERVER_IP="${server_ip}"
+CERT_DIR="/root/.acme.sh/\${SERVER_IP}_ecc"
+
+if [[ -f "\${CERT_DIR}/fullchain.cer" ]] && [[ -f "\${CERT_DIR}/\${SERVER_IP}.key" ]]; then
+    cp "\${CERT_DIR}/fullchain.cer" /etc/nginx/ssl/telemt-panel.crt
+    cp "\${CERT_DIR}/\${SERVER_IP}.key" /etc/nginx/ssl/telemt-panel.key
+    chmod 644 /etc/nginx/ssl/telemt-panel.crt
+    chmod 640 /etc/nginx/ssl/telemt-panel.key
+    chown root:www-data /etc/nginx/ssl/telemt-panel.key
+    systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null
+    echo "\$(date): Сертификат обновлён через хук acme.sh" >> /var/log/telemt-cert-update.log
+fi
+HOOK_EOF
+    
+    chmod +x "/root/.acme.sh/hooks/ip-${server_ip}.sh"
+    
+    if [[ -f "/root/.acme.sh/${server_ip}_ecc/${server_ip}.conf" ]]; then
+        /root/.acme.sh/acme.sh --renew -d "${server_ip}" --renew-hook "/root/.acme.sh/hooks/ip-${server_ip}.sh ${server_ip}" >/dev/null 2>&1
+        success "Хук acme.sh настроен, сертификат будет копироваться автоматически"
+    else
+        warn "Не удалось зарегистрировать хук, будет использован fallback-метод"
+        cat > /etc/cron.daily/telemt-copy-certs << CRON_EOF
+#!/bin/bash
+if [[ -f "$THREE_X_UI_CERT" ]] && [[ -f "$THREE_X_UI_KEY" ]]; then
+    cp $THREE_X_UI_CERT /etc/nginx/ssl/telemt-panel.crt
+    cp $THREE_X_UI_KEY /etc/nginx/ssl/telemt-panel.key
+    chmod 644 /etc/nginx/ssl/telemt-panel.crt
+    chmod 640 /etc/nginx/ssl/telemt-panel.key
+    chown root:www-data /etc/nginx/ssl/telemt-panel.key
+    systemctl reload nginx 2>/dev/null
+fi
+CRON_EOF
+        chmod +x /etc/cron.daily/telemt-copy-certs
+        success "Добавлен ежедневный cron для копирования сертификатов"
+    fi
+}
+
 get_letsencrypt_ip_cert() {
     local server_ip="$1"
+    local NGINX_WAS_STOPPED=0
     
     step "Проверка порта 80..."
     if ss -tlnp | grep -q ":80 "; then
-        warn "Порт 80 занят! Для получения сертификата Let's Encrypt нужен свободный порт 80"
-        read -p "Остановить nginx временно? (y/N): " stop_nginx
-        if [[ "$stop_nginx" == "y" || "$stop_nginx" == "Y" ]]; then
-            systemctl stop nginx 2>/dev/null
-            NGINX_WAS_STOPPED=1
-            sleep 2
+        if ss -tlnp | grep -q ":80.*nginx"; then
+            warn "Порт 80 занят nginx"
+            read -p "Остановить nginx временно для получения сертификата? (y/N): " stop_nginx
+            if [[ "$stop_nginx" == "y" || "$stop_nginx" == "Y" ]]; then
+                systemctl stop nginx 2>/dev/null
+                NGINX_WAS_STOPPED=1
+                sleep 2
+            else
+                error "Невозможно получить сертификат. Освободите порт 80"
+                return 1
+            fi
         else
-            error "Невозможно получить сертификат. Выберите другой тип."
-            return 1
+            warn "Порт 80 занят другим процессом"
+            read -p "Остановить процесс временно? (y/N): " stop_proc
+            if [[ "$stop_proc" != "y" && "$stop_proc" != "Y" ]]; then
+                error "Невозможно получить сертификат"
+                return 1
+            fi
         fi
     fi
     
@@ -227,7 +283,6 @@ get_letsencrypt_ip_cert() {
         
         success "Сертификат получен!"
         
-        step "Установка сертификата для Nginx..."
         mkdir -p /etc/nginx/ssl
         ~/.acme.sh/acme.sh --install-cert -d "$server_ip" \
             --key-file /etc/nginx/ssl/telemt-panel.key \
@@ -236,7 +291,9 @@ get_letsencrypt_ip_cert() {
         chmod 600 /etc/nginx/ssl/telemt-panel.key
         chmod 644 /etc/nginx/ssl/telemt-panel.crt
         
-        success "Сертификат установлен! Автообновление настроено автоматически."
+        setup_cert_hook "$server_ip"
+        
+        success "Сертификат установлен! Автообновление настроено."
         return 0
     else
         error "Ошибка получения сертификата"
@@ -245,20 +302,92 @@ get_letsencrypt_ip_cert() {
 }
 
 # ============================================
-# НОВАЯ: GEOIP ДЛЯ WEB ПАНЕЛИ
+# ПРОВЕРКА СУЩЕСТВУЮЩИХ СЕРТИФИКАТОВ 3X-UI
+# ============================================
+check_and_setup_3xui_cert() {
+    local server_ip="$1"
+    
+    if [[ -f "$THREE_X_UI_CERT" ]] && [[ -f "$THREE_X_UI_KEY" ]]; then
+        echo ""
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}🔐 Найден сертификат 3x-ui для IP $server_ip${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${CYAN}Путь: $THREE_X_UI_CERT_DIR${NC}"
+        echo ""
+        echo "Выберите действие:"
+        echo "  1) Использовать сертификат 3x-ui с автоматическим обновлением"
+        echo "  2) Получить новый сертификат через Let's Encrypt"
+        echo "  3) Пропустить (использовать самоподписной)"
+        read -p "Выбор [1-3]: " cert_choice
+        
+        case $cert_choice in
+            1)
+                mkdir -p /etc/nginx/ssl
+                cp "$THREE_X_UI_CERT" /etc/nginx/ssl/telemt-panel.crt
+                cp "$THREE_X_UI_KEY" /etc/nginx/ssl/telemt-panel.key
+                chmod 644 /etc/nginx/ssl/telemt-panel.crt
+                chmod 640 /etc/nginx/ssl/telemt-panel.key
+                chown root:www-data /etc/nginx/ssl/telemt-panel.key
+                setup_cert_hook "$server_ip"
+                return 0
+                ;;
+            2)
+                return 2
+                ;;
+            *)
+                return 3
+                ;;
+        esac
+    fi
+    
+    if [[ -d "/root/.acme.sh/${server_ip}_ecc" ]]; then
+        echo ""
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}🔐 Найден исходный сертификат acme.sh для IP $server_ip${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo "Выберите действие:"
+        echo "  1) Использовать существующий сертификат (с автообновлением)"
+        echo "  2) Получить новый сертификат"
+        echo "  3) Пропустить"
+        read -p "Выбор [1-3]: " cert_choice
+        
+        case $cert_choice in
+            1)
+                mkdir -p /etc/nginx/ssl
+                cp "/root/.acme.sh/${server_ip}_ecc/fullchain.cer" /etc/nginx/ssl/telemt-panel.crt
+                cp "/root/.acme.sh/${server_ip}_ecc/${server_ip}.key" /etc/nginx/ssl/telemt-panel.key
+                chmod 644 /etc/nginx/ssl/telemt-panel.crt
+                chmod 640 /etc/nginx/ssl/telemt-panel.key
+                chown root:www-data /etc/nginx/ssl/telemt-panel.key
+                setup_cert_hook "$server_ip"
+                return 0
+                ;;
+            2)
+                return 2
+                ;;
+            *)
+                return 3
+                ;;
+        esac
+    fi
+    
+    return 1
+}
+
+# ============================================
+# GEOIP ДЛЯ WEB ПАНЕЛИ
 # ============================================
 update_geoip_db() {
     step "Загрузка GeoIP базы MaxMind..."
     mkdir -p "$(dirname "$GEOIP_DB_PATH")"
     
-    # Скачиваем актуальную базу
     wget -q -O "$GEOIP_DB_PATH" \
         https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb 2>/dev/null
     
     if [[ -f "$GEOIP_DB_PATH" ]]; then
         success "GeoIP база загружена: $GEOIP_DB_PATH"
         
-        # Добавляем конфигурацию в панель
         if [[ -f "$PANEL_CONFIG" ]]; then
             if ! grep -q "^\[geoip\]" "$PANEL_CONFIG"; then
                 echo -e "\n[geoip]" >> "$PANEL_CONFIG"
@@ -274,7 +403,7 @@ update_geoip_db() {
 }
 
 # ============================================
-# НОВАЯ: SOCKS5 UPSTREAM
+# SOCKS5 UPSTREAM
 # ============================================
 configure_socks5_upstream() {
     clear
@@ -290,7 +419,7 @@ configure_socks5_upstream() {
     read -p "У вас уже есть SOCKS5 сервер или хотите установить на этот же? (есть/установить/нет): " socks5_choice
     
     case "$socks5_choice" in
-        есть|есть|ЕСТЬ)
+        есть|ЕСТЬ)
             read -p "Введите адрес SOCKS5 сервера (IP:порт): " socks5_addr
             read -p "Введите логин (если есть, иначе Enter): " socks5_user
             read -p "Введите пароль (если есть, иначе Enter): " socks5_pass
@@ -326,7 +455,6 @@ EOF
             ;;
     esac
     
-    # Добавляем upstream в конфиг
     if ! grep -q "^\[\[upstreams\]\]" "$TELEMT_CONFIG"; then
         cat >> "$TELEMT_CONFIG" << EOF
 
@@ -357,7 +485,7 @@ EOF
 }
 
 # ============================================
-# НОВАЯ: ЭКСПОРТ ВСЕХ ССЫЛОК
+# ЭКСПОРТ ВСЕХ ССЫЛОК
 # ============================================
 export_all_links() {
     clear
@@ -399,7 +527,6 @@ export_all_links() {
     cat "$output_file"
     pause
 }
-
 # ============================================
 # ПРОВЕРКА ПОРТА (УЛУЧШЕННАЯ)
 # ============================================
@@ -426,7 +553,6 @@ check_port_available() {
         return 0
     fi
     
-    # Если порт занят telemt — игнорируем
     if echo "$port_info" | grep -q "$bin_name"; then
         info "Порт $port уже используется telemt (будет перезапущен)"
         return 0
@@ -473,7 +599,7 @@ save_panel_version() {
 }
 
 # ============================================
-# ПОКАЗ QR-КОДА ДЛЯ ПОЛЬЗОВАТЕЛЯ (С ПОДДЕРЖКОЙ SNI СПИСКА)
+# ПОКАЗ QR-КОДА ДЛЯ ПОЛЬЗОВАТЕЛЯ
 # ============================================
 show_qr_for_user() {
     local username="$1"
@@ -688,7 +814,6 @@ install_telemt() {
         return
     fi
     
-    # Выбор уровня оптимизации
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}ВЫБОР УРОВНЯ ОПТИМИЗАЦИИ СБОРКИ:${NC}"
@@ -792,7 +917,7 @@ uninstall_telemt() {
 }
 
 # ============================================
-# ОБНОВЛЕНИЕ TELEMT (ПУНКТ 17)
+# ОБНОВЛЕНИЕ TELEMT
 # ============================================
 update_telemt() {
     clear
@@ -897,7 +1022,6 @@ update_telemt() {
     
     systemctl stop telemt
     
-    # Выбор уровня оптимизации
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}ВЫБОР УРОВНЯ ОПТИМИЗАЦИИ СБОРКИ:${NC}"
@@ -1004,7 +1128,6 @@ add_user() {
         return
     fi
     
-    # Используем первый домен из списка для EE ссылки
     current_sni=$(get_primary_tls_domain)
     current_port=$(grep -oP 'port = \K\d+' $TELEMT_CONFIG 2>/dev/null || echo "7443")
     current_secure=$(grep -oP 'secure = \K\w+' $TELEMT_CONFIG 2>/dev/null || echo "false")
@@ -1071,7 +1194,6 @@ add_user() {
         return
     fi
     
-    # Автоудаление temp_user при добавлении первого реального пользователя
     users_count=$(get_users_count)
     if [[ $users_count -gt 1 ]] && grep -q "^temp_user = " $TELEMT_CONFIG; then
         sed -i "/^temp_user = /d" $TELEMT_CONFIG
@@ -1150,7 +1272,6 @@ list_users() {
         return
     fi
     
-    # Получаем лимиты IP
     declare -A ip_limits
     while IFS='=' read -r user limit; do
         user=$(echo "$user" | xargs)
@@ -1160,7 +1281,6 @@ list_users() {
         fi
     done < <(sed -n '/^\[access.user_max_unique_ips\]/,/^\[/p' $TELEMT_CONFIG | grep -E '^[a-zA-Z0-9_-]+ = [0-9]+' 2>/dev/null || true)
     
-    # Выводим список пользователей с номерами
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     printf "${CYAN}%-4s %-20s %-10s${NC}\n" "№" "ИМЯ" "ЛИМИТ IP"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1207,7 +1327,6 @@ list_users() {
     secret="${user_secrets[$user_num]}"
     limit="${ip_limits[$username]:-0}"
     
-    # Генерируем ссылки
     sni_hex=$(echo -n "$current_sni" | xxd -p -c 1000 | tr -d '\n')
     ee_secret="ee${secret}${sni_hex}"
     dd_secret="dd${secret}"
@@ -1240,7 +1359,6 @@ list_users() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
-    # ===== QR-КОД =====
     echo ""
     echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}📱 Хотите получить QR-код для быстрого подключения?${NC}"
@@ -1261,7 +1379,6 @@ list_users() {
                 ;;
         esac
     fi
-    # ===== КОНЕЦ БЛОКА QR =====
     
     pause
 }
@@ -1356,9 +1473,8 @@ remove_user() {
     
     pause
 }
-
 # ============================================
-# УПРАВЛЕНИЕ SNI ДОМЕНАМИ (НОВОЕ МЕНЮ)
+# УПРАВЛЕНИЕ SNI ДОМЕНАМИ
 # ============================================
 manage_sni_domains() {
     clear
@@ -1418,7 +1534,7 @@ manage_sni_domains() {
 }
 
 # ============================================
-# Настройка порта и лимитов
+# СМЕНА ПОРТА
 # ============================================
 change_port() {
     clear
@@ -1444,7 +1560,6 @@ change_port() {
         return
     fi
     
-    # Проверка с улучшенной логикой
     step "Проверка доступности порта $new_port..."
     if ! check_port_available "$new_port" "telemt"; then
         read -p "Введите новый порт: " new_port
@@ -1479,6 +1594,9 @@ change_port() {
     pause
 }
 
+# ============================================
+# ИЗМЕНЕНИЕ ЛИМИТА ПОЛЬЗОВАТЕЛЯ
+# ============================================
 change_user_limit() {
     clear
     echo -e "${MAGENTA}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1599,7 +1717,7 @@ change_user_limit() {
 }
 
 # ============================================
-# Управление Telegram ботом
+# УСТАНОВКА TELEGRAM БОТА
 # ============================================
 install_bot() {
     clear
@@ -1709,11 +1827,9 @@ def get_current_port():
     return "7443"
 
 def get_tls_domains():
-    """Получает список SNI доменов из конфига"""
     try:
         with open(TELEMT_CONFIG, 'r') as f:
             content = f.read()
-        # Новый формат tls_domains
         import re
         match = re.search(r'tls_domains\s*=\s*\[(.*?)\]', content, re.DOTALL)
         if match:
@@ -1721,7 +1837,6 @@ def get_tls_domains():
             domains = re.findall(r'"([^"]+)"', domains_str)
             if domains:
                 return domains
-        # Старый формат tls_domain
         match = re.search(r'tls_domain\s*=\s*"([^"]+)"', content)
         if match:
             return [match.group(1)]
@@ -1730,7 +1845,6 @@ def get_tls_domains():
     return ["www.google.com"]
 
 def get_current_sni():
-    """Возвращает первый SNI домен для обратной совместимости"""
     domains = get_tls_domains()
     return domains[0] if domains else "www.google.com"
 
@@ -1882,17 +1996,13 @@ def remove_user_from_config(username):
         return False
 
 def change_sni_in_config(new_sni):
-    """Обновляет список SNI доменов (добавляет или заменяет)"""
     try:
         with open(TELEMT_CONFIG, 'r') as f:
             content = f.read()
         
-        # Проверяем, есть ли уже список доменов
         if 'tls_domains' in content:
-            # Заменяем список
             content = re.sub(r'tls_domains\s*=\s*\[[^\]]*\]', f'tls_domains = ["{new_sni}"]', content)
         else:
-            # Добавляем новую строку
             content = re.sub(r'tls_domain\s*=\s*"[^"]*"', f'tls_domains = ["{new_sni}"]', content)
         
         with open(TELEMT_CONFIG, 'w') as f:
@@ -2352,7 +2462,7 @@ uninstall_bot() {
 }
 
 # ============================================
-# Функции для Web панели Telemt Panel
+# УСТАНОВКА WEB ПАНЕЛИ TELEMT
 # ============================================
 install_telemt_panel() {
     clear
@@ -2394,7 +2504,6 @@ install_telemt_panel() {
         panel_port="3333"
     fi
     
-    # Проверка, не занят ли порт
     if ss -tlnp | grep -q ":$panel_port "; then
         warn "Порт $panel_port уже занят!"
         read -p "Использовать другой порт? (y/N): " change_port_choice
@@ -2417,12 +2526,10 @@ install_telemt_panel() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     read -p "Выберите [1-3]: " cert_type
     
-    # Установка зависимостей для сборки
     step "Установка зависимостей для сборки..."
     apt update -qq
     apt install -y golang-go git make npm nodejs
     
-    # Клонируем репозиторий и собираем панель с исправлением WebSocket
     step "Клонирование репозитория telemt_panel..."
     cd /tmp
     rm -rf telemt_panel
@@ -2431,7 +2538,7 @@ install_telemt_panel() {
     
     step "Установка зависимостей фронтенда и сборка..."
     cd frontend
-    npm install 2>&1 | while read line; do
+    npm install --no-audit --no-fund --loglevel=error 2>&1 | while read line; do
         echo -e "    ${CYAN}npm:${NC} $line"
     done
     npm run build 2>&1 | while read line; do
@@ -2439,7 +2546,6 @@ install_telemt_panel() {
     done
     cd ..
     
-    # ИСПРАВЛЕНИЕ WEBSOCKET
     step "Исправление CheckOrigin в коде..."
     sed -i '/CheckOrigin:/,/^[[:space:]]*},/c\
         CheckOrigin: func(r *http.Request) bool { return true; },' internal/ws/handler.go
@@ -2501,9 +2607,6 @@ allowed_origins = ["*"]
 
 [websocket]
 allowed_origins = ["*"]
-
-[geoip]
-db_path = "$GEOIP_DB_PATH"
 EOF
     chmod 600 $PANEL_CONFIG
     
@@ -2514,15 +2617,25 @@ EOF
     
     case $cert_type in
         2)
-            if get_letsencrypt_ip_cert "$server_ip"; then
-                success "Let's Encrypt сертификат получен и установлен"
-            else
-                warn "Не удалось получить Let's Encrypt сертификат. Создаём самоподписной..."
-                openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-                    -keyout /etc/nginx/ssl/telemt-panel.key \
-                    -out /etc/nginx/ssl/telemt-panel.crt \
-                    -subj "/C=RU/ST=State/L=City/O=Telemt/CN=$server_ip" 2>/dev/null
-            fi
+            check_and_setup_3xui_cert "$server_ip"
+            case $? in
+                0)
+                    success "Используем сертификат от 3x-ui"
+                    ;;
+                2)
+                    get_letsencrypt_ip_cert "$server_ip"
+                    ;;
+                3)
+                    warn "Создаём самоподписной сертификат"
+                    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                        -keyout /etc/nginx/ssl/telemt-panel.key \
+                        -out /etc/nginx/ssl/telemt-panel.crt \
+                        -subj "/C=RU/ST=State/L=City/O=Telemt/CN=$server_ip" 2>/dev/null
+                    ;;
+                *)
+                    get_letsencrypt_ip_cert "$server_ip"
+                    ;;
+            esac
             ;;
         3)
             read -p "Введите полный путь к файлу сертификата (.crt): " custom_crt
@@ -2589,7 +2702,6 @@ EOF
         ufw allow $panel_port/tcp
     fi
     
-    # Загрузка GeoIP базы
     update_geoip_db
     
     step "Запуск сервисов..."
@@ -2615,7 +2727,6 @@ EOF
     systemctl enable telemt-panel
     systemctl start telemt-panel
     
-    # Сохраняем версию панели
     PANEL_VERSION=$(cd /tmp/telemt_panel && git describe --tags 2>/dev/null | sed 's/^v//' || echo "0.5.2")
     save_panel_version "$PANEL_VERSION"
     
@@ -2647,6 +2758,9 @@ EOF
     pause
 }
 
+# ============================================
+# УДАЛЕНИЕ WEB ПАНЕЛИ
+# ============================================
 uninstall_telemt_panel() {
     clear
     echo -e "${RED}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -2708,7 +2822,7 @@ uninstall_telemt_panel() {
     step "Обновление systemd..."
     systemctl daemon-reload
     
-    success "Web панель Telemt полностью удалена! Telemt, Telegram бот и другие сайты остались без изменений."
+    success "Web панель Telemt полностью удалена!"
     pause
 }
 
@@ -2779,7 +2893,7 @@ update_telemt_panel() {
     echo ""
     
     if ! check_panel_installed; then
-        error "Web панель не установлена. Сначала установите (пункт 13)"
+        error "Web панель не установлена. Сначала установите (пункт 15)"
         pause
         return
     fi
@@ -2834,7 +2948,6 @@ update_telemt_panel() {
     done
     cd ..
     
-    # ИСПРАВЛЕНИЕ WEBSOCKET
     step "Применение исправления WebSocket..."
     sed -i '/CheckOrigin:/,/^[[:space:]]*},/c\
         CheckOrigin: func(r *http.Request) bool { return true; },' internal/ws/handler.go
@@ -2853,10 +2966,8 @@ update_telemt_panel() {
     chmod +x /opt/bin/telemt/telemt-panel
     chown telemt:telemt /opt/bin/telemt/telemt-panel 2>/dev/null || true
     
-    # Сохраняем новую версию
     save_panel_version "$LATEST_VERSION"
     
-    # Обновляем GeoIP базу
     update_geoip_db
     
     step "Запуск панели..."
@@ -2878,7 +2989,7 @@ update_telemt_panel() {
 }
 
 # ============================================
-# Статус и информация
+# СТАТУС И ИНФОРМАЦИЯ
 # ============================================
 show_status() {
     clear
@@ -2946,7 +3057,6 @@ show_status() {
     server_ip=$(get_server_ip)
     echo -e "${CYAN}● IPv4 сервера:${NC} $server_ip"
     
-    # Проверка SOCKS5
     if grep -q "^\[\[upstreams\]\]" "$TELEMT_CONFIG" 2>/dev/null; then
         socks5_addr=$(grep -A5 "type = \"socks5\"" "$TELEMT_CONFIG" 2>/dev/null | grep "address" | head -1 | cut -d'"' -f2)
         if [[ -n "$socks5_addr" ]]; then
@@ -2992,11 +3102,9 @@ show_qr_menu() {
         return
     fi
     
-    # Получаем текущие настройки
     current_port=$(grep -oP 'port = \K\d+' $TELEMT_CONFIG 2>/dev/null || echo "7443")
     current_sni=$(get_primary_tls_domain)
     
-    # Получаем список пользователей
     users=$(get_users_list)
     
     if [[ -z "$users" ]]; then
@@ -3005,7 +3113,6 @@ show_qr_menu() {
         return
     fi
     
-    # Выводим список пользователей
     echo -e "${CYAN}Выберите пользователя:${NC}"
     echo "─────────────────────────────────────────────────────────────────────────────"
     printf "${CYAN}%-4s %-20s %-40s${NC}\n" "№" "ИМЯ" "СЕКРЕТ"
@@ -3075,7 +3182,7 @@ show_menu() {
     
     echo -e "          ${YELLOW}Передай привеД ПОТАПу !!!${NC}"
     echo -e "          ${GREEN}✨ Версия 3.4.9+ ✨${NC}"
-    echo -e "          ${CYAN}Поддержка нескольких SNI, GeoIP, LE на IP${NC}"
+    echo -e "          ${CYAN}Поддержка нескольких SNI, GeoIP, LE на IP, хуки acme.sh${NC}"
     echo ""
     echo -e "${GREEN}  УСТАНОВКА И УДАЛЕНИЕ${NC}"
     echo -e "  ${GREEN}1)${NC} Установить telemt"
@@ -3109,7 +3216,7 @@ show_menu() {
     echo -e "  ${CYAN}17)${NC} Сменить логин/пароль Web панели"
     echo -e "  ${GREEN}18)${NC} Обновить Web панель"
     echo -e "  ${CYAN}19)${NC} Обновить GeoIP базу"
-    echo -e "  ${GREEN}20)${NC} Получить Let's Encrypt сертификат на IP"
+    echo -e "  ${GREEN}20)${NC} Получить/обновить Let's Encrypt сертификат на IP"
     echo ""
     echo -e "${GREEN}  ОБНОВЛЕНИЕ${NC}"
     echo -e "  ${GREEN}21)${NC} Проверить обновления telemt"
@@ -3125,7 +3232,7 @@ show_menu() {
 # ============================================
 main() {
     check_root
-    
+
     while true; do
         show_menu
         case $choice in
