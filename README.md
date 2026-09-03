@@ -66,5 +66,9 @@ Telegram часто блокируют на уровне провайдеров.
 
 ## Быстрая установка
 
+| С НАЧАЛА перед установкой выполняете
+| git config --global http.version HTTP/1.1
+| А потому уже либо установка либо Обновление
+
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/potap1978/Telemt_web_bot_script/main/telemt_web_bot_script.sh)
